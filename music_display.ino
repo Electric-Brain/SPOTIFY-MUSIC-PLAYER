@@ -745,6 +745,50 @@ void parseCommand(char *cmd) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  HARDWARE POTENTIOMETER VOLUME CONTROL (PIN A5)
+// ═══════════════════════════════════════════════════════════════════
+
+#define POT_PIN A5
+
+void checkVolumePot() {
+  static unsigned long lastPotCheck = 0;
+  static int lastSentVol = -1;
+  static int lastSentRaw = -1;
+  static float filteredAdc = -1.0;
+
+  // Throttle ADC reads to ~30ms for responsive yet jitter-free control
+  if (millis() - lastPotCheck < 30) return;
+  lastPotCheck = millis();
+
+  int sample = analogRead(POT_PIN);
+  if (filteredAdc < 0) {
+    // Cold boot initialization: record starting knob position without jumping volume
+    filteredAdc = sample;
+    lastSentRaw = sample;
+    int clamped = constrain(sample, 10, 1014);
+    lastSentVol = map(clamped, 10, 1014, 0, 100);
+    return;
+  }
+
+  // Smooth ADC readings with exponential moving average (ideal for 47k pot impedance)
+  filteredAdc = filteredAdc * 0.70 + sample * 0.30;
+  int raw = (int)(filteredAdc + 0.5);
+
+  // Deadband: must move by at least 8 ADC counts to trigger (avoids resting flutter)
+  if (abs(raw - lastSentRaw) >= 8) {
+    int clamped = constrain(raw, 10, 1014);
+    int vol = map(clamped, 10, 1014, 0, 100);
+    vol = constrain(vol, 0, 100);
+    if (vol != lastSentVol) {
+      Serial.print(F("#VOL:"));
+      Serial.println(vol);
+      lastSentVol = vol;
+      lastSentRaw = raw;
+    }
+  }
+}
+
 void readSerial() {
   while (Serial.available()) {
     char c = Serial.read();
@@ -815,6 +859,7 @@ void loop() {
   static unsigned long lastUI = 0;
 
   readSerial();
+  checkVolumePot();
 
   if (currentMode == MODE_CLOCK) {
     if (notifActive && millis() > notifExpireAt) {

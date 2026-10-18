@@ -26,6 +26,7 @@ if sys.stderr is None:
     sys.stderr = io.StringIO()
 
 from PIL import Image, ImageEnhance
+from pycaw.pycaw import AudioUtilities
 import serial
 import serial.tools.list_ports
 from winrt.windows.devices.bluetooth import BluetoothDevice, BluetoothConnectionStatus
@@ -231,6 +232,77 @@ def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
         ser.write(f"#NOTIF:{napp}|{nmsg}\n".encode("ascii"))
 
 
+# ═══════════════════════════════════════════════════════════════════
+#   HARDWARE VOLUME CONTROLLER & POPUP TRIGGER (PIN A5 -> WINDOWS)
+# ═══════════════════════════════════════════════════════════════════
+
+VK_VOLUME_UP   = 0xAF
+VK_VOLUME_DOWN = 0xAE
+
+_cached_audio_endpoint = None
+
+def get_audio_endpoint():
+    global _cached_audio_endpoint
+    if _cached_audio_endpoint is None:
+        try:
+            sp = AudioUtilities.GetSpeakers()
+            _cached_audio_endpoint = sp.EndpointVolume if sp else None
+        except Exception:
+            _cached_audio_endpoint = None
+    return _cached_audio_endpoint
+
+
+def set_system_volume(vol_pct: int):
+    """Sets master volume (0-100%) and triggers the live native Windows volume popup (OSD)."""
+    ep = get_audio_endpoint()
+    if not ep:
+        return
+    scalar = max(0.0, min(1.0, vol_pct / 100.0))
+    try:
+        # 1. Set exact scalar level directly
+        ep.SetMasterVolumeLevelScalar(scalar, None)
+
+        # 2. Trigger native Windows Volume Flyout / OSD banner popup
+        if scalar >= 0.98:
+            ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, 2, 0)
+        else:
+            ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, 2, 0)
+
+        # 3. Re-assert exact scalar level so keystroke doesn't shift it
+        ep.SetMasterVolumeLevelScalar(scalar, None)
+    except Exception:
+        pass
+
+
+async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
+    """Continuously reads incoming serial lines from Arduino (e.g. #VOL:45) with <15ms latency."""
+    buffer = ""
+    while state_tracker.get("running", True):
+        try:
+            # During cover streaming, let send_cover_async have exclusive access to ser.read
+            if state_tracker.get("streaming_cover", False):
+                await asyncio.sleep(0.04)
+                continue
+
+            if ser.is_open and ser.in_waiting > 0:
+                raw = ser.read(ser.in_waiting).decode("ascii", errors="ignore")
+                buffer += raw
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if line.startswith("#VOL:"):
+                        try:
+                            vol = int(line[5:])
+                            set_system_volume(vol)
+                        except ValueError:
+                            pass
+        except Exception:
+            pass
+        await asyncio.sleep(0.015)
+
+
 def find_arduino_port() -> str:
     """Resolve serial port using user config or auto-discovery."""
     if PORT and PORT.upper() != "AUTO":
@@ -400,7 +472,9 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
     except Exception:
         pass
 
+    clock_state["streaming_cover"] = False
     worker_task = asyncio.create_task(telemetry_background_worker(notif_listener, clock_state))
+    reader_task = asyncio.create_task(serial_reader_worker(ser, clock_state))
 
     try:
         while ser.is_open:
@@ -487,9 +561,13 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
                 # Stream cover with active mid-stream abort check
                 cover = await extract_cover_rgb565(props)
                 if cover:
-                    success = await send_cover_async(ser, cover, ses, track_key)
-                    if not success:
-                        continue
+                    clock_state["streaming_cover"] = True
+                    try:
+                        success = await send_cover_async(ser, cover, ses, track_key)
+                        if not success:
+                            continue
+                    finally:
+                        clock_state["streaming_cover"] = False
                 else:
                     ser.write(b"#NOIMG\n")
 
@@ -510,6 +588,7 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
     finally:
         clock_state["running"] = False
         worker_task.cancel()
+        reader_task.cancel()
 
 
 async def main():

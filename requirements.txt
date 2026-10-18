@@ -11,3 +11,4 @@ winrt-Windows.UI.Notifications.Management>=3.2.1
 winrt-Windows.ApplicationModel>=3.2.1
 winrt-Windows.Devices.Enumeration>=3.2.1
 winrt-Windows.Devices.Bluetooth>=3.2.1
+pycaw>=20240210
