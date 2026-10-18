@@ -86,19 +86,23 @@ char lastL[8]  = "";
 char lastR[8]  = "";
 
 // Clock & System Dashboard Dimensions (Portrait 240x320)
-#define CLK_START_X   6
-#define CLK_TIME_Y    24
-#define CLK_AMPM_Y    38
-#define CLK_DATE_Y    64
-#define CLK_DIV1_Y    88
+#define CLK_START_X      6
+#define CLK_TIME_Y       18
+#define CLK_AMPM_Y       32
+#define CLK_DATE_Y       52
+#define CLK_DIV1_Y       72
 
-#define SYS_BATT_Y    100
-#define SYS_WIFI_Y    134
-#define SYS_BT_Y      168
-#define CLK_DIV2_Y    198
+#define SYS_BATT_Y       80
+#define SYS_WIFI_Y       108
+#define SYS_BT_Y         136
+#define CLK_DIV2_Y       162
 
-#define NOTIF_CARD_Y  206
-#define NOTIF_CARD_H  74
+#define SYS_VOL_Y        172
+#define SYS_VOL_BAR_Y    194
+#define CLK_DIV3_Y       212
+
+#define NOTIF_CARD_Y     220
+#define NOTIF_CARD_H     74
 
 char lastClockDigits[9] = "";
 char lastClockAmpm[6]   = "";
@@ -108,6 +112,15 @@ int  lastBatt           = -1;
 int  lastChg            = -1;
 char lastWifi[20]       = "";
 char lastBt[20]         = "";
+
+int  lastVolDisp        = -1;
+int  lastMuteState      = -1;
+bool volLabelDrawn      = false;
+int  lastSentVol        = -1;
+
+#define POT_PIN         A5
+void drawVolumeWidget(int vol);
+void checkVolumePot();
 
 bool          notifActive   = false;
 unsigned long notifExpireAt = 0;
@@ -249,9 +262,18 @@ void setupClockLayout() {
   memset(lastBt,   0, sizeof(lastBt));
   notifActive = false;
 
+  lastVolDisp   = -1;
+  lastMuteState = -1;
+  volLabelDrawn = false;
+
   // Sleek subtle horizontal dividers
   tft.drawFastHLine(10, CLK_DIV1_Y, 220, COL_BORDER);
   tft.drawFastHLine(10, CLK_DIV2_Y, 220, COL_BORDER);
+  tft.drawFastHLine(10, CLK_DIV3_Y, 220, COL_BORDER);
+
+  if (lastSentVol >= 0) {
+    drawVolumeWidget(lastSentVol);
+  }
 }
 
 void renderClockDigits(const char *curDigits) {
@@ -452,6 +474,77 @@ void clearNotificationCard() {
   notifActive = false;
 }
 
+void drawVolumeWidget(int vol) {
+  if (currentMode != MODE_CLOCK) return;
+
+  int x = 16;
+  int y = SYS_VOL_Y;
+
+  // 1. Speaker icon (X=16, Y=SYS_VOL_Y)
+  int muteState = (vol == 0) ? 0 : (vol <= 35 ? 1 : (vol <= 70 ? 2 : 3));
+  if (muteState != lastMuteState) {
+    tft.fillRect(x, y - 1, 24, 16, COL_BG);
+
+    // Speaker body & cone
+    tft.fillRect(x, y + 3, 4, 8, COL_WHITE);
+    tft.fillTriangle(x + 4, y + 3, x + 10, y, x + 4, y + 10, COL_WHITE);
+    tft.fillTriangle(x + 4, y + 10, x + 10, y + 13, x + 10, y, COL_WHITE);
+
+    if (vol == 0) {
+      // Mute red X
+      tft.drawLine(x + 13, y + 3, x + 21, y + 11, 0xF800);
+      tft.drawLine(x + 21, y + 3, x + 13, y + 11, 0xF800);
+    } else {
+      // Small sound wave
+      tft.drawLine(x + 13, y + 4, x + 15, y + 7, COL_GREEN);
+      tft.drawLine(x + 15, y + 7, x + 13, y + 10, COL_GREEN);
+      if (vol > 35) {
+        // Medium sound wave
+        tft.drawLine(x + 17, y + 2, x + 20, y + 7, COL_GREEN);
+        tft.drawLine(x + 20, y + 7, x + 17, y + 12, COL_GREEN);
+      }
+    }
+    lastMuteState = muteState;
+  }
+
+  // 2. "VOLUME" Label (TextSize 2, white)
+  if (!volLabelDrawn) {
+    tft.setTextSize(2);
+    tft.setTextColor(COL_WHITE, COL_BG);
+    tft.setCursor(x + 28, y);
+    tft.print(F("VOLUME"));
+    volLabelDrawn = true;
+  }
+
+  // 3. Percentage Text (TextSize 2, green, e.g. " 75%")
+  if (vol != lastVolDisp) {
+    char vBuf[6];
+    snprintf(vBuf, sizeof(vBuf), "%3d%%", vol);
+    tft.setTextSize(2);
+    tft.setTextColor(COL_GREEN, COL_BG);
+    tft.setCursor(168, y);
+    tft.print(vBuf);
+    lastVolDisp = vol;
+  }
+
+  // 4. Volume Bar (Y=SYS_VOL_BAR_Y, W=208, H=8, rounded corners)
+  int barX = 16;
+  int barY = SYS_VOL_BAR_Y;
+  int barW = 208;
+  int barH = 8;
+
+  int fillW = (vol * barW) / 100;
+  if (fillW < 0) fillW = 0;
+  if (fillW > barW) fillW = barW;
+
+  if (fillW > 0) {
+    tft.fillRoundRect(barX, barY, fillW, barH, 3, COL_GREEN);
+  }
+  if (fillW < barW) {
+    tft.fillRoundRect(barX + fillW, barY, barW - fillW, barH, 3, COL_TRACK);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  COVER IMAGE RECEIVER (WITH FAST MID-STREAM ABORT SUPPORT)
 // ═══════════════════════════════════════════════════════════════════
@@ -463,8 +556,11 @@ void receiveCoverImage() {
   uint8_t *bp = (uint8_t *)rowBuf;
 
   for (int row = 0; row < ART_SIZE; row++) {
+    checkVolumePot();
+
     unsigned long t0 = millis();
     while (Serial.available() < 3) {
+      checkVolumePot();
       if (millis() - t0 > 800) return;
     }
 
@@ -494,8 +590,11 @@ void receiveCoverImage() {
           bp[got++] = Serial.read();
         }
         t0 = millis();
-      } else if (millis() - t0 > 600) {
-        return;
+      } else {
+        checkVolumePot();
+        if (millis() - t0 > 600) {
+          return;
+        }
       }
     }
 
@@ -503,6 +602,7 @@ void receiveCoverImage() {
     tft.pushColors(rowBuf, ART_SIZE, true);
 
     updateLiveProgress();
+    checkVolumePot();
     Serial.write('K');
   }
 
@@ -720,6 +820,15 @@ void handleNotif(char *payload) {
   drawNotificationCard(p[0], p[1]);
 }
 
+void handleVol(char *payload) {
+  int vol = atoi(payload);
+  vol = constrain(vol, 0, 100);
+  lastSentVol = vol;
+  if (currentMode == MODE_CLOCK) {
+    drawVolumeWidget(vol);
+  }
+}
+
 void parseCommand(char *cmd) {
   if (strncmp(cmd, "#SONG:", 6) == 0) {
     handleSong(cmd + 6);
@@ -743,17 +852,17 @@ void parseCommand(char *cmd) {
   else if (strncmp(cmd, "#NOTIF:", 7) == 0) {
     handleNotif(cmd + 7);
   }
+  else if (strncmp(cmd, "#VOL:", 5) == 0) {
+    handleVol(cmd + 5);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
 //  HARDWARE POTENTIOMETER VOLUME CONTROL (PIN A5)
 // ═══════════════════════════════════════════════════════════════════
 
-#define POT_PIN A5
-
 void checkVolumePot() {
   static unsigned long lastPotCheck = 0;
-  static int lastSentVol = -1;
   static int lastSentRaw = -1;
   static float filteredAdc = -1.0;
 
@@ -768,6 +877,7 @@ void checkVolumePot() {
     lastSentRaw = sample;
     int clamped = constrain(sample, 10, 1014);
     lastSentVol = map(clamped, 10, 1014, 0, 100);
+    lastSentVol = constrain(lastSentVol, 0, 100);
     return;
   }
 
@@ -785,6 +895,9 @@ void checkVolumePot() {
       Serial.print(F("#VOL:"));
       Serial.println(vol);
       lastSentVol = vol;
+      if (currentMode == MODE_CLOCK) {
+        drawVolumeWidget(vol);
+      }
     }
   }
 }

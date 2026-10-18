@@ -16,7 +16,7 @@ Communicating over high-speed serial with a lightweight Windows background servi
   - 📶 **Connected Wi-Fi Network**: Shows your active Wi-Fi SSID (e.g. `Nothing Phone 2A`).
   - 🎧 **Connected Bluetooth Device**: Displays currently connected Bluetooth headphones, speaker, or audio device.
   - 🔔 **Real-Time Notification Popups**: Toast notifications (WhatsApp, Telegram, Slack, System) pop up in a sleek bottom card and auto-dismiss after 12 seconds.
-- 🔊 **Hardware Rotary Volume Knob**: Connect a potentiometer (10kΩ to 50kΩ, linear or logarithmic) to analog pin `A5`. Rotating the knob smoothly controls Windows master system volume (0–100%) and triggers the native Windows on-screen volume flyout / OSD banner in real time.
+- 🔊 **Hardware Rotary Volume Knob & Live Clock Display**: Connect a potentiometer (10kΩ to 50kΩ, linear or logarithmic) to analog pin `A5`. Rotating the knob smoothly controls Windows master system volume (0–100%) and triggers the native Windows on-screen volume flyout banner in real time. Works instantaneously even while album art is streaming, and displays live volume percentages with vector speaker icon and smooth slider bar in Clock Mode.
 - ⏱️ **Real-Time Synchronized Progress Bar & Scrubber**: Live seconds counter and progress knob synchronized with Windows Media Controls.
 - ⏸️ **Instant Freeze on Pause**: Elapsed timer stops immediately when paused, displaying a clean `PAUSED` badge without drifting.
 - 🔁 **Instant Music Wake-Up**: As soon as music resumes, the screen wakes instantly from clock mode and renders the track view.

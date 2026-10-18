@@ -232,6 +232,18 @@ def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
         state_tracker["pending_notif"] = None
         ser.write(f"#NOTIF:{napp}|{nmsg}\n".encode("ascii"))
 
+    # Sync system volume to Arduino clock mode if changed from Windows side
+    ep = get_audio_endpoint()
+    if ep:
+        try:
+            cur_vol = round(ep.GetMasterVolumeLevelScalar() * 100)
+            if cur_vol != state_tracker.get("last_synced_vol", -1):
+                state_tracker["last_synced_vol"] = cur_vol
+                if cur_vol != _last_applied_vol:
+                    ser.write(f"#VOL:{cur_vol}\n".encode("ascii"))
+        except Exception:
+            pass
+
 
 # ═══════════════════════════════════════════════════════════════════
 #   HARDWARE VOLUME CONTROLLER & POPUP TRIGGER (PIN A5 -> WINDOWS)
@@ -415,30 +427,46 @@ async def extract_cover_safe() -> bytes | None:
 
 
 async def send_cover_async(ser: serial.Serial, img_bytes: bytes, ses, active_track_key: str) -> bool:
-    """Stream 200 rows with active mid-stream skip detection."""
+    """Stream 200 rows with active mid-stream skip detection and live volume control."""
+    vol_line_buf = ""
+
+    def process_incoming_data(data: bytes) -> bool:
+        """Parses incoming bytes, extracts #VOL: lines, and checks for 'K' ACK."""
+        nonlocal vol_line_buf
+        got_k = False
+        for byte_val in data:
+            if byte_val == ord('K'):
+                got_k = True
+            elif byte_val == ord('\n'):
+                line = vol_line_buf.strip()
+                if line.startswith("#VOL:"):
+                    try:
+                        set_system_volume(int(line[5:]))
+                    except ValueError:
+                        pass
+                vol_line_buf = ""
+            elif byte_val != ord('\r'):
+                vol_line_buf += chr(byte_val)
+        return got_k
+
     # Drain any buffered lines (e.g. #VOL) before sending #IMG_START
     while ser.in_waiting > 0:
         chunk = ser.read(ser.in_waiting)
-        try:
-            for part in chunk.decode("ascii", errors="ignore").split("\n"):
-                if part.strip().startswith("#VOL:"):
-                    set_system_volume(int(part.strip()[5:]))
-        except Exception:
-            pass
+        process_incoming_data(chunk)
 
     ser.write(b"#IMG_START\n")
 
-    ack = None
+    ack = False
     t0 = time.time()
     while time.time() - t0 < 2.0:
         if ser.in_waiting > 0:
-            b = ser.read(1)
-            if b == b'K':
-                ack = b'K'
+            raw = ser.read(ser.in_waiting)
+            if process_incoming_data(raw):
+                ack = True
                 break
         await asyncio.sleep(0.005)
 
-    if ack != b'K':
+    if not ack:
         return False
 
     row_bytes = ART_SIZE * 2
@@ -465,17 +493,17 @@ async def send_cover_async(ser: serial.Serial, img_bytes: bytes, ses, active_tra
         row_data = img_bytes[r * row_bytes : (r + 1) * row_bytes]
         ser.write(b"#L" + bytes([r]) + row_data)
 
-        ack = None
+        ack = False
         t0 = time.time()
         while time.time() - t0 < 1.5:
             if ser.in_waiting > 0:
-                b = ser.read(1)
-                if b == b'K':
-                    ack = b'K'
+                raw = ser.read(ser.in_waiting)
+                if process_incoming_data(raw):
+                    ack = True
                     break
             await asyncio.sleep(0.002)
 
-        if ack != b'K':
+        if not ack:
             return False
 
     return True
