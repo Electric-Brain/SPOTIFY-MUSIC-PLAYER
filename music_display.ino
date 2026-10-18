@@ -93,7 +93,7 @@ char lastR[8]  = "";
 
 char lastClockDigits[9] = "";
 char lastClockAmpm[6]   = "";
-char lastClockDate[24]  = "";
+char lastClockDate[32]  = "";
 
 // ═══════════════════════════════════════════════════════════════════
 //  HELPERS
@@ -212,6 +212,7 @@ void updateLiveProgress() {
 
 void setupClockLayout() {
   tft.fillScreen(COL_BG);
+  tft.setTextWrap(false);
   currentMode = MODE_CLOCK;
 
   memset(lastClockDigits, 0, sizeof(lastClockDigits));
@@ -223,6 +224,8 @@ void renderClock(const char *tStr, const char *ampm, const char *dStr) {
   if (currentMode != MODE_CLOCK) {
     setupClockLayout();
   }
+
+  tft.setTextWrap(false);
 
   // Ensure 8-character fixed format: e.g. " 6:44:24" or "12:44:24"
   char curDigits[9];
@@ -255,7 +258,8 @@ void renderClock(const char *tStr, const char *ampm, const char *dStr) {
     tft.setTextColor(COL_WHITE, COL_BG);
     tft.setCursor(CLK_START_X + 8 * 24 + 6, CLK_AMPM_Y);
     tft.print(ampm);
-    strcpy(lastClockAmpm, ampm);
+    strncpy(lastClockAmpm, ampm, sizeof(lastClockAmpm) - 1);
+    lastClockAmpm[sizeof(lastClockAmpm) - 1] = 0;
   }
 
   // Date (Centered TextSize 2, drawn ONLY when date changes at midnight)
@@ -264,13 +268,15 @@ void renderClock(const char *tStr, const char *ampm, const char *dStr) {
     int dateX = (240 - dLen * 12) / 2;
     if (dateX < 6) dateX = 6;
 
-    tft.fillRect(0, CLK_DATE_Y - 2, 240, 20, COL_BG);
+    // Wipe entire screen area below time down to bottom (eliminates any stray text forever)
+    tft.fillRect(0, CLK_DATE_Y - 4, 240, 320 - (CLK_DATE_Y - 4), COL_BG);
     tft.setTextSize(2);
     tft.setTextColor(COL_GRAY_LT, COL_BG);
     tft.setCursor(dateX, CLK_DATE_Y);
     tft.print(dStr);
 
-    strcpy(lastClockDate, dStr);
+    strncpy(lastClockDate, dStr, sizeof(lastClockDate) - 1);
+    lastClockDate[sizeof(lastClockDate) - 1] = 0;
   }
 }
 
@@ -446,6 +452,10 @@ void handleTimeUpdate(char *payload) {
 }
 
 void handleClock(char *payload) {
+  // Truncate merged commands if a newline was lost during USB connect
+  char *hash = strchr(payload, '#');
+  if (hash) *hash = 0;
+
   char *p[3];
   byte k = 0;
   p[k++] = payload;
@@ -453,6 +463,18 @@ void handleClock(char *payload) {
     if (*c == '|') { *c = 0; p[k++] = c + 1; }
   }
   if (k < 3) return;
+
+  // Validate time string (must be 7 or 8 chars, e.g. " 9:53:12")
+  int tLen = strlen(p[0]);
+  if (tLen < 7 || tLen > 8) return;
+
+  // Validate AM/PM (must be exactly 2 chars)
+  int aLen = strlen(p[1]);
+  if (aLen != 2) return;
+
+  // Validate Date string length (must be reasonable)
+  int dLen = strlen(p[2]);
+  if (dLen < 4 || dLen > 24) return;
 
   state = 'S'; // Stop any ongoing music counter
   renderClock(p[0], p[1], p[2]);
@@ -484,8 +506,12 @@ void readSerial() {
       lineBuf[lineIdx] = 0;
       if (lineIdx > 0) parseCommand(lineBuf);
       lineIdx = 0;
-    } else if (c != '\r' && lineIdx < sizeof(lineBuf) - 1) {
-      lineBuf[lineIdx++] = c;
+    } else if (c != '\r') {
+      if (lineIdx < sizeof(lineBuf) - 1) {
+        lineBuf[lineIdx++] = c;
+      } else {
+        lineIdx = 0; // Drop corrupted line if buffer overflows without seeing newline
+      }
     }
   }
 }
@@ -533,6 +559,10 @@ void setup() {
   tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logo24, 24, 24, COL_GREEN, COL_SURFACE);
   tft.fillRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, 2, COL_TRACK);
   drawStatusBadge('N');
+
+  // Flush any stale/corrupted bytes that arrived during bootloader & splash delays
+  while (Serial.available()) Serial.read();
+  lineIdx = 0;
 }
 
 void loop() {

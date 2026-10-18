@@ -303,6 +303,8 @@ async def main():
             time.sleep(2)  # UNO reboot wait
             ser.reset_input_buffer()
             ser.reset_output_buffer()
+            ser.write(b"\n")
+            await asyncio.sleep(0.05)
             await run_playback_loop(ser, mgr)
         except (serial.SerialException, PermissionError, OSError):
             await asyncio.sleep(2)
