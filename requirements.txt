@@ -1,8 +1,13 @@
-# Python dependencies for Spotify Now Playing Display
+# Python dependencies for Spotify Now Playing Display & Smart Desk Clock
 pillow>=10.0.0
 pyserial>=3.5
-winrt-runtime>=3.0.0
-winrt-Windows.Foundation>=3.0.0
-winrt-Windows.Foundation.Collections>=3.0.0
-winrt-Windows.Media.Control>=3.0.0
-winrt-Windows.Storage.Streams>=3.0.0
+winrt-runtime>=3.2.1
+winrt-Windows.Foundation>=3.2.1
+winrt-Windows.Foundation.Collections>=3.2.1
+winrt-Windows.Media.Control>=3.2.1
+winrt-Windows.Storage.Streams>=3.2.1
+winrt-Windows.UI.Notifications>=3.2.1
+winrt-Windows.UI.Notifications.Management>=3.2.1
+winrt-Windows.ApplicationModel>=3.2.1
+winrt-Windows.Devices.Enumeration>=3.2.1
+winrt-Windows.Devices.Bluetooth>=3.2.1

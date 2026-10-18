@@ -85,15 +85,32 @@ int  lastKnobX = -1;
 char lastL[8]  = "";
 char lastR[8]  = "";
 
-// Clock Differential Trackers
-#define CLK_START_X 9
-#define CLK_TIME_Y  124
-#define CLK_AMPM_Y  138
-#define CLK_DATE_Y  175
+// Clock & System Dashboard Dimensions (Portrait 240x320)
+#define CLK_START_X   6
+#define CLK_TIME_Y    24
+#define CLK_AMPM_Y    38
+#define CLK_DATE_Y    64
+#define CLK_DIV1_Y    88
+
+#define SYS_BATT_Y    100
+#define SYS_WIFI_Y    134
+#define SYS_BT_Y      168
+#define CLK_DIV2_Y    198
+
+#define NOTIF_CARD_Y  206
+#define NOTIF_CARD_H  74
 
 char lastClockDigits[9] = "";
 char lastClockAmpm[6]   = "";
 char lastClockDate[32]  = "";
+
+int  lastBatt           = -1;
+int  lastChg            = -1;
+char lastWifi[20]       = "";
+char lastBt[20]         = "";
+
+bool          notifActive   = false;
+unsigned long notifExpireAt = 0;
 
 // ═══════════════════════════════════════════════════════════════════
 //  HELPERS
@@ -218,6 +235,16 @@ void setupClockLayout() {
   memset(lastClockDigits, 0, sizeof(lastClockDigits));
   memset(lastClockAmpm,   0, sizeof(lastClockAmpm));
   memset(lastClockDate,   0, sizeof(lastClockDate));
+
+  lastBatt = -1;
+  lastChg  = -1;
+  memset(lastWifi, 0, sizeof(lastWifi));
+  memset(lastBt,   0, sizeof(lastBt));
+  notifActive = false;
+
+  // Sleek subtle horizontal dividers
+  tft.drawFastHLine(10, CLK_DIV1_Y, 220, COL_BORDER);
+  tft.drawFastHLine(10, CLK_DIV2_Y, 220, COL_BORDER);
 }
 
 void renderClock(const char *tStr, const char *ampm, const char *dStr) {
@@ -256,7 +283,7 @@ void renderClock(const char *tStr, const char *ampm, const char *dStr) {
   if (strcmp(ampm, lastClockAmpm) != 0) {
     tft.setTextSize(2);
     tft.setTextColor(COL_WHITE, COL_BG);
-    tft.setCursor(CLK_START_X + 8 * 24 + 6, CLK_AMPM_Y);
+    tft.setCursor(CLK_START_X + 8 * 24 + 4, CLK_AMPM_Y);
     tft.print(ampm);
     strncpy(lastClockAmpm, ampm, sizeof(lastClockAmpm) - 1);
     lastClockAmpm[sizeof(lastClockAmpm) - 1] = 0;
@@ -268,8 +295,7 @@ void renderClock(const char *tStr, const char *ampm, const char *dStr) {
     int dateX = (240 - dLen * 12) / 2;
     if (dateX < 6) dateX = 6;
 
-    // Wipe entire screen area below time down to bottom (eliminates any stray text forever)
-    tft.fillRect(0, CLK_DATE_Y - 4, 240, 320 - (CLK_DATE_Y - 4), COL_BG);
+    tft.fillRect(0, CLK_DATE_Y - 2, 240, 20, COL_BG);
     tft.setTextSize(2);
     tft.setTextColor(COL_GRAY_LT, COL_BG);
     tft.setCursor(dateX, CLK_DATE_Y);
@@ -278,6 +304,142 @@ void renderClock(const char *tStr, const char *ampm, const char *dStr) {
     strncpy(lastClockDate, dStr, sizeof(lastClockDate) - 1);
     lastClockDate[sizeof(lastClockDate) - 1] = 0;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  CLOCK MODE SYSTEM WIDGETS (BATTERY, WIFI, BLUETOOTH, NOTIFICATIONS)
+// ═══════════════════════════════════════════════════════════════════
+
+void drawBatteryWidget(int x, int y, int pct, bool chg) {
+  tft.fillRect(x, y - 2, 215, 20, COL_BG);
+
+  // 1. Battery outline (26x14) & terminal (3x6)
+  tft.drawRoundRect(x, y, 26, 14, 2, COL_WHITE);
+  tft.fillRect(x + 26, y + 4, 3, 6, COL_WHITE);
+
+  // 2. Proportional battery fill
+  int w = (pct * 20) / 100;
+  if (w > 20) w = 20;
+  if (w < 2 && pct > 0) w = 2;
+  uint16_t barCol = (pct <= 20) ? 0xF800 : (pct <= 50 ? 0xFD20 : COL_GREEN);
+  if (w > 0) {
+    tft.fillRect(x + 3, y + 3, w, 8, barCol);
+  }
+
+  // 3. Lightning bolt ⚡ symbol if charging
+  int textStartX = x + 36;
+  if (chg) {
+    int lx = x + 33;
+    int ly = y;
+    tft.drawLine(lx + 4, ly,     lx + 1, ly + 6,  0xFFE0);
+    tft.drawLine(lx + 5, ly,     lx + 2, ly + 6,  0xFFE0);
+    tft.drawLine(lx + 1, ly + 6, lx + 6, ly + 6,  0xFFE0);
+    tft.drawLine(lx + 6, ly + 6, lx + 2, ly + 14, 0xFFE0);
+    tft.drawLine(lx + 5, ly + 6, lx + 1, ly + 14, 0xFFE0);
+    textStartX += 16;
+  }
+
+  // 4. Percentage & status text
+  tft.setTextSize(2);
+  tft.setTextColor(COL_WHITE, COL_BG);
+  tft.setCursor(textStartX, y);
+  tft.print(pct);
+  tft.print(F("%"));
+  if (chg) {
+    tft.setTextSize(1);
+    tft.setTextColor(0xFFE0, COL_BG);
+    tft.setCursor(textStartX + (pct == 100 ? 54 : 42), y + 4);
+    tft.print(F("Charging"));
+  }
+}
+
+void drawWifiWidget(int x, int y, const char *ssid) {
+  tft.fillRect(x, y - 2, 215, 20, COL_BG);
+
+  bool connected = (strcmp(ssid, "Disconnected") != 0 && strcmp(ssid, "No Wi-Fi") != 0 && strlen(ssid) > 0);
+  uint16_t col = connected ? COL_GREEN : COL_GRAY_MD;
+
+  // Wi-Fi signal arcs
+  tft.fillCircle(x + 8, y + 13, 2, col);
+  tft.drawCircle(x + 8, y + 13, 6, col);
+  tft.drawCircle(x + 8, y + 13, 10, col);
+  tft.fillRect(x - 2, y + 14, 22, 8, COL_BG);
+
+  // SSID text
+  tft.setTextSize(2);
+  tft.setTextColor(connected ? COL_WHITE : COL_GRAY_MD, COL_BG);
+  tft.setCursor(x + 26, y);
+  char buf[17];
+  strncpy(buf, connected ? ssid : "Disconnected", 16);
+  buf[16] = 0;
+  tft.print(buf);
+}
+
+void drawBtWidget(int x, int y, const char *device) {
+  tft.fillRect(x, y - 2, 215, 20, COL_BG);
+
+  bool connected = (strcmp(device, "None") != 0 && strcmp(device, "Disconnected") != 0 && strlen(device) > 0);
+  uint16_t col = connected ? 0x051F : COL_GRAY_MD; // Blue or dim
+
+  // Bluetooth ᛒ symbol
+  tft.drawFastVLine(x + 6, y, 15, col);
+  tft.drawFastVLine(x + 7, y, 15, col);
+  tft.drawLine(x + 2, y + 3,  x + 11, y + 11, col);
+  tft.drawLine(x + 11, y + 11, x + 6, y + 15, col);
+  tft.drawLine(x + 2, y + 12, x + 11, y + 4,  col);
+  tft.drawLine(x + 11, y + 4,  x + 6, y,      col);
+
+  // Device Name text
+  tft.setTextSize(2);
+  tft.setTextColor(connected ? COL_WHITE : COL_GRAY_MD, COL_BG);
+  tft.setCursor(x + 26, y);
+  char buf[17];
+  strncpy(buf, connected ? device : "Disconnected", 16);
+  buf[16] = 0;
+  tft.print(buf);
+}
+
+void drawNotificationCard(const char *app, const char *msg) {
+  // Clear card area
+  tft.fillRect(8, NOTIF_CARD_Y, 224, NOTIF_CARD_H + 2, COL_BG);
+
+  // Card background & vibrant green border
+  tft.fillRoundRect(8, NOTIF_CARD_Y, 224, NOTIF_CARD_H, 6, COL_CARD);
+  tft.drawRoundRect(8, NOTIF_CARD_Y, 224, NOTIF_CARD_H, 6, COL_GREEN);
+
+  // Bell icon in yellow
+  uint16_t bellCol = 0xFFE0;
+  tft.fillRoundRect(18, NOTIF_CARD_Y + 11, 8, 8, 2, bellCol);
+  tft.drawFastHLine(16, NOTIF_CARD_Y + 19, 12, bellCol);
+  tft.drawPixel(21, NOTIF_CARD_Y + 9, bellCol);
+  tft.drawPixel(21, NOTIF_CARD_Y + 21, bellCol);
+
+  // App Title (TextSize 2, bold white)
+  tft.setTextSize(2);
+  tft.setTextColor(COL_WHITE, COL_CARD);
+  tft.setCursor(34, NOTIF_CARD_Y + 8);
+  char appBuf[13];
+  strncpy(appBuf, app, 12);
+  appBuf[12] = 0;
+  tft.print(appBuf);
+
+  // Notification message preview (TextSize 1, light gray)
+  tft.setTextSize(1);
+  tft.setTextColor(COL_GRAY_LT, COL_CARD);
+  tft.setCursor(16, NOTIF_CARD_Y + 34);
+  char msgBuf[35];
+  strncpy(msgBuf, msg, 34);
+  msgBuf[34] = 0;
+  tft.print(msgBuf);
+
+  notifActive = true;
+  notifExpireAt = millis() + 12000;
+}
+
+void clearNotificationCard() {
+  if (!notifActive) return;
+  tft.fillRect(8, NOTIF_CARD_Y, 224, NOTIF_CARD_H + 2, COL_BG);
+  notifActive = false;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -346,6 +508,7 @@ void handleSong(char *payload) {
     tft.fillScreen(COL_BG);
     drawHeader();
     currentMode = MODE_MUSIC;
+    notifActive = false;
   }
 
   char *p[6];
@@ -480,6 +643,61 @@ void handleClock(char *payload) {
   renderClock(p[0], p[1], p[2]);
 }
 
+void handleSys(char *payload) {
+  if (currentMode != MODE_CLOCK) return;
+
+  char *hash = strchr(payload, '#');
+  if (hash) *hash = 0;
+
+  char *p[4];
+  byte k = 0;
+  p[k++] = payload;
+  for (char *c = payload; *c && k < 4; c++) {
+    if (*c == '|') { *c = 0; p[k++] = c + 1; }
+  }
+  if (k < 4) return;
+
+  int pct = atoi(p[0]);
+  int chg = atoi(p[1]);
+  char *wifi = p[2];
+  char *bt   = p[3];
+
+  if (pct != lastBatt || chg != lastChg) {
+    drawBatteryWidget(16, SYS_BATT_Y, pct, chg != 0);
+    lastBatt = pct;
+    lastChg  = chg;
+  }
+
+  if (strcmp(wifi, lastWifi) != 0) {
+    drawWifiWidget(16, SYS_WIFI_Y, wifi);
+    strncpy(lastWifi, wifi, sizeof(lastWifi) - 1);
+    lastWifi[sizeof(lastWifi) - 1] = 0;
+  }
+
+  if (strcmp(bt, lastBt) != 0) {
+    drawBtWidget(16, SYS_BT_Y, bt);
+    strncpy(lastBt, bt, sizeof(lastBt) - 1);
+    lastBt[sizeof(lastBt) - 1] = 0;
+  }
+}
+
+void handleNotif(char *payload) {
+  if (currentMode != MODE_CLOCK) return;
+
+  char *hash = strchr(payload, '#');
+  if (hash) *hash = 0;
+
+  char *p[2];
+  byte k = 0;
+  p[k++] = payload;
+  for (char *c = payload; *c && k < 2; c++) {
+    if (*c == '|') { *c = 0; p[k++] = c + 1; }
+  }
+  if (k < 2) return;
+
+  drawNotificationCard(p[0], p[1]);
+}
+
 void parseCommand(char *cmd) {
   if (strncmp(cmd, "#SONG:", 6) == 0) {
     handleSong(cmd + 6);
@@ -496,6 +714,12 @@ void parseCommand(char *cmd) {
   }
   else if (strncmp(cmd, "#CLOCK:", 7) == 0) {
     handleClock(cmd + 7);
+  }
+  else if (strncmp(cmd, "#SYS:", 5) == 0) {
+    handleSys(cmd + 5);
+  }
+  else if (strncmp(cmd, "#NOTIF:", 7) == 0) {
+    handleNotif(cmd + 7);
   }
 }
 
@@ -569,6 +793,12 @@ void loop() {
   static unsigned long lastUI = 0;
 
   readSerial();
+
+  if (currentMode == MODE_CLOCK) {
+    if (notifActive && millis() > notifExpireAt) {
+      clearNotificationCard();
+    }
+  }
 
   if (millis() - lastUI < 120) return;
   lastUI = millis();

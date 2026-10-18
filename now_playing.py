@@ -11,8 +11,11 @@
 # ============================================================================
 
 import asyncio
+import ctypes
 from datetime import datetime, timezone
 import io
+import re
+import subprocess
 import sys
 import time
 
@@ -25,15 +28,176 @@ if sys.stderr is None:
 from PIL import Image, ImageEnhance
 import serial
 import serial.tools.list_ports
+from winrt.windows.devices.bluetooth import BluetoothDevice, BluetoothConnectionStatus
+from winrt.windows.devices.enumeration import DeviceInformation
 from winrt.windows.media.control import (
     GlobalSystemMediaTransportControlsSessionManager as SessionManager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlayStatus,
 )
 from winrt.windows.storage.streams import DataReader
+from winrt.windows.ui.notifications.management import (
+    UserNotificationListener,
+    UserNotificationListenerAccessStatus,
+)
+from winrt.windows.ui.notifications import NotificationKinds
 
 PORT = "COM5"       # Arduino Port (e.g. "COM3", "COM5"), or "AUTO" to auto-detect
 BAUD = 115200
 ART_SIZE = 200      # 200x200 Cover Art (Maximized Screen Width)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#   BATTERY, WIFI, BLUETOOTH & NOTIFICATION COLLECTORS
+# ═══════════════════════════════════════════════════════════════════
+
+class SYSTEM_POWER_STATUS(ctypes.Structure):
+    _fields_ = [
+        ('ACLineStatus', ctypes.c_byte),
+        ('BatteryFlag', ctypes.c_byte),
+        ('BatteryLifePercent', ctypes.c_byte),
+        ('SystemStatusFlag', ctypes.c_byte),
+        ('BatteryLifeTime', ctypes.c_ulong),
+        ('BatteryFullLifeTime', ctypes.c_ulong),
+    ]
+
+
+def get_battery_info() -> tuple[int, int]:
+    """Returns (percent, is_charging)."""
+    status = SYSTEM_POWER_STATUS()
+    if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+        pct = int(status.BatteryLifePercent)
+        if pct < 0 or pct > 100:
+            pct = 100
+        chg = 1 if status.ACLineStatus == 1 else 0
+        return pct, chg
+    return 100, 0
+
+
+_cached_wifi: str = ""
+_wifi_last_check: float = 0.0
+
+
+def get_wifi_ssid() -> str:
+    global _cached_wifi, _wifi_last_check
+    now = time.time()
+    if now - _wifi_last_check < 4.0 and _cached_wifi:
+        return _cached_wifi
+    _wifi_last_check = now
+    try:
+        out = subprocess.check_output(
+            ["netsh", "wlan", "show", "interfaces"],
+            creationflags=0x08000000,
+            text=True,
+            timeout=1.5,
+        )
+        m = re.search(r'^\s*SSID\s*:\s*(.+)$', out, re.MULTILINE)
+        if m:
+            s = m.group(1).strip()
+            if s:
+                _cached_wifi = clean(s, 16)
+                return _cached_wifi
+        st = re.search(r'^\s*State\s*:\s*(.+)$', out, re.MULTILINE)
+        if st and "disconnected" in st.group(1).lower():
+            _cached_wifi = "Disconnected"
+            return _cached_wifi
+    except Exception:
+        pass
+    _cached_wifi = "Disconnected"
+    return _cached_wifi
+
+
+_cached_bt: str = "None"
+_bt_last_check: float = 0.0
+
+
+async def get_bluetooth_device() -> str:
+    global _cached_bt, _bt_last_check
+    now = time.time()
+    if now - _bt_last_check < 4.0:
+        return _cached_bt
+    _bt_last_check = now
+    try:
+        selector = BluetoothDevice.get_device_selector_from_connection_status(BluetoothConnectionStatus.CONNECTED)
+        devices = await DeviceInformation.find_all_async_aqs_filter(selector)
+        for d in devices:
+            if d.name:
+                _cached_bt = clean(d.name, 16)
+                return _cached_bt
+    except Exception:
+        pass
+    _cached_bt = "None"
+    return _cached_bt
+
+
+async def init_notification_listener():
+    try:
+        listener = UserNotificationListener.current
+        status = await listener.request_access_async()
+        if status == UserNotificationListenerAccessStatus.ALLOWED:
+            notifs = await listener.get_notifications_async(NotificationKinds.TOAST)
+            last_id = notifs[len(notifs) - 1].id if len(notifs) > 0 else 0
+            return listener, last_id
+    except Exception:
+        pass
+    return None, 0
+
+
+async def check_new_notification(listener, last_id: int) -> tuple[int, str, str] | None:
+    if not listener:
+        return None
+    try:
+        notifs = await listener.get_notifications_async(NotificationKinds.TOAST)
+        cnt = len(notifs)
+        if cnt > 0:
+            latest = notifs[cnt - 1]
+            if latest.id > last_id:
+                app = "Notification"
+                try:
+                    if latest.app_info and latest.app_info.display_info:
+                        app = clean(latest.app_info.display_info.display_name, 12)
+                except Exception:
+                    pass
+                msg = ""
+                try:
+                    b = latest.notification.visual.get_binding("ToastGeneric")
+                    if b:
+                        elems = list(b.get_text_elements())
+                        if len(elems) >= 1 and elems[0].text:
+                            msg = elems[0].text
+                        if len(elems) >= 2 and elems[1].text:
+                            msg = f"{msg}: {elems[1].text}" if msg else elems[1].text
+                except Exception:
+                    pass
+                return latest.id, app, clean(msg, 28)
+    except Exception:
+        pass
+    return None
+
+
+async def send_clock_dashboard(ser: serial.Serial, notif_listener, state_tracker: dict):
+    now = datetime.now()
+    t_str = f"{now.hour % 12 or 12:2d}:{now.minute:02d}:{now.second:02d}"
+    ampm  = now.strftime("%p")
+    d_str = now.strftime("%A, %d %b")
+    ser.write(f"#CLOCK:{t_str}|{ampm}|{d_str}\n".encode("ascii"))
+
+    cur_time = time.time()
+    if cur_time - state_tracker.get("last_sys_check", 0) >= 3.0:
+        pct, chg = get_battery_info()
+        wifi = get_wifi_ssid()
+        bt = await get_bluetooth_device()
+        sys_state = f"{pct}|{chg}|{wifi}|{bt}"
+        if sys_state != state_tracker.get("last_sys_state", "") or (cur_time - state_tracker.get("last_sys_sent", 0) >= 6.0):
+            ser.write(f"#SYS:{sys_state}\n".encode("ascii"))
+            state_tracker["last_sys_state"] = sys_state
+            state_tracker["last_sys_sent"] = cur_time
+        state_tracker["last_sys_check"] = cur_time
+
+    new_notif = await check_new_notification(notif_listener, state_tracker.get("last_notif_id", 0))
+    if new_notif:
+        nid, napp, nmsg = new_notif
+        state_tracker["last_notif_id"] = nid
+        ser.write(f"#NOTIF:{napp}|{nmsg}\n".encode("ascii"))
 
 
 def find_arduino_port() -> str:
@@ -180,21 +344,23 @@ def compute_position(tl, status) -> tuple[int, int, str]:
     return int(pos), int(dur), flag
 
 
-async def run_playback_loop(ser: serial.Serial, mgr):
-    """Main loop streaming metadata, live time, covers, and standby clock."""
+async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_notif_id: int):
+    """Main loop streaming metadata, live time, covers, and clock dashboard."""
     last_track_id = ""
     paused_since: float | None = None
+    clock_state = {
+        "last_sys_check": 0.0,
+        "last_sys_sent": 0.0,
+        "last_sys_state": "",
+        "last_notif_id": initial_notif_id,
+    }
 
     while ser.is_open:
         ses = await get_best_session(mgr)
 
         # ── Standby / No Media Session -> Clock Mode ──
         if ses is None:
-            now = datetime.now()
-            t_str = f"{now.hour % 12 or 12:2d}:{now.minute:02d}:{now.second:02d}"
-            ampm  = now.strftime("%p")
-            d_str = now.strftime("%A, %d %b")
-            ser.write(f"#CLOCK:{t_str}|{ampm}|{d_str}\n".encode("ascii"))
+            await send_clock_dashboard(ser, notif_listener, clock_state)
             last_track_id = ""
             paused_since = None
             await asyncio.sleep(1.0)
@@ -218,12 +384,8 @@ async def run_playback_loop(ser: serial.Serial, mgr):
                 # Immediately freeze timer and draw PAUSED badge
                 ser.write(f"#T:{pos}:{dur}:S\n".encode("ascii"))
             elif time.time() - paused_since >= 8.0:
-                # 8 seconds of continuous pause: Switch to sleek Standby Clock
-                now = datetime.now()
-                t_str = f"{now.hour % 12 or 12:2d}:{now.minute:02d}:{now.second:02d}"
-                ampm  = now.strftime("%p")
-                d_str = now.strftime("%A, %d %b")
-                ser.write(f"#CLOCK:{t_str}|{ampm}|{d_str}\n".encode("ascii"))
+                # 8 seconds of continuous pause: Switch to sleek Standby Clock Dashboard
+                await send_clock_dashboard(ser, notif_listener, clock_state)
                 await asyncio.sleep(1.0)
                 continue
             else:
@@ -294,6 +456,7 @@ async def run_playback_loop(ser: serial.Serial, mgr):
 
 async def main():
     mgr = await SessionManager.request_async()
+    notif_listener, initial_notif_id = await init_notification_listener()
 
     # Infinite plug-and-play auto-reconnect loop
     while True:
@@ -305,7 +468,7 @@ async def main():
             ser.reset_output_buffer()
             ser.write(b"\n")
             await asyncio.sleep(0.05)
-            await run_playback_loop(ser, mgr)
+            await run_playback_loop(ser, mgr, notif_listener, initial_notif_id)
         except (serial.SerialException, PermissionError, OSError):
             await asyncio.sleep(2)
         except KeyboardInterrupt:

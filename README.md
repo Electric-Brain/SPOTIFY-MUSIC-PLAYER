@@ -10,8 +10,12 @@ Communicating over high-speed serial with a lightweight Windows background servi
 
 - 🎨 **High-Resolution 200x200 Album Art**: Direct 16-bit RGB565 streaming that maximizes screen width with vibrant colors.
 - ⚡ **Instant Mid-Stream Skip Abort (`#A`)**: Zero lag when skipping songs. Image transmission cancels within <80ms, immediately drawing the next track.
-- 🕒 **Zero-Blink Standby Clock**: When playback is paused or Spotify closes (after 8 seconds), the display switches to a minimalist digital clock (`6:44:24 PM` + full date `Sunday, 18 Oct`).
-- 👁️ **Differential Character Rendering**: Clock updates only redraw the changing second digits. Zero full-screen clears, zero backlight flicker.
+- 🕒 **Smart Desk Clock & Dashboard (Standby Mode)**: When playback is paused or Spotify closes (after 8 seconds), the display switches to a rich ambient smart desk dashboard:
+  - ⏱️ **Zero-Blink Digital Clock**: Differential character rendering (`9:53:12 PM` + `Sunday, 18 Oct`) with zero flicker.
+  - 🔋 **Live Laptop Battery Status**: Percentage bar with dynamic lightning bolt ⚡ indicator when charging.
+  - 📶 **Connected Wi-Fi Network**: Shows your active Wi-Fi SSID (e.g. `Nothing Phone 2A`).
+  - 🎧 **Connected Bluetooth Device**: Displays currently connected Bluetooth headphones, speaker, or audio device.
+  - 🔔 **Real-Time Notification Popups**: Toast notifications (WhatsApp, Telegram, Slack, System) pop up in a sleek bottom card and auto-dismiss after 12 seconds.
 - ⏱️ **Real-Time Synchronized Progress Bar & Scrubber**: Live seconds counter and progress knob synchronized with Windows Media Controls.
 - ⏸️ **Instant Freeze on Pause**: Elapsed timer stops immediately when paused, displaying a clean `PAUSED` badge without drifting.
 - 🔁 **Instant Music Wake-Up**: As soon as music resumes, the screen wakes instantly from clock mode and renders the track view.
@@ -146,6 +150,8 @@ Communication runs at **115200 baud** over USB Serial.
 | `#A` | Host → Arduino | Instant abort signal. Cancels active image transfer when song skips. |
 | `#T:pos:dur:state` | Host → Arduino | Live playback tick with current elapsed seconds and state (`P` or `S`). |
 | `#CLOCK:time\|ampm\|date` | Host → Arduino | Standby clock update with differential digit rendering. |
+| `#SYS:batt\|chg\|wifi\|bt` | Host → Arduino | System telemetry: Battery %, Charging flag, Wi-Fi SSID, BT device. |
+| `#NOTIF:app\|msg` | Host → Arduino | Live toast notification popup banner on standby screen. |
 
 ---
 
