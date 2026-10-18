@@ -112,6 +112,13 @@ char lastBt[20]         = "";
 bool          notifActive   = false;
 unsigned long notifExpireAt = 0;
 
+// Autonomous Precision Clock Variables
+bool          clockSynced   = false;
+int           clkHour       = 0;
+int           clkMin        = 0;
+int           clkSec        = 0;
+unsigned long clkLastTick   = 0;
+
 // ═══════════════════════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════════
@@ -247,12 +254,25 @@ void setupClockLayout() {
   tft.drawFastHLine(10, CLK_DIV2_Y, 220, COL_BORDER);
 }
 
+void renderClockDigits(const char *curDigits) {
+  tft.setTextWrap(false);
+  tft.setTextSize(4);
+  tft.setTextColor(COL_WHITE, COL_BG);
+  for (int i = 0; i < 8; i++) {
+    char c = curDigits[i];
+    if (c != lastClockDigits[i]) {
+      tft.setCursor(CLK_START_X + i * 24, CLK_TIME_Y);
+      tft.print(c);
+      lastClockDigits[i] = c;
+    }
+  }
+  lastClockDigits[8] = 0;
+}
+
 void renderClock(const char *tStr, const char *ampm, const char *dStr) {
   if (currentMode != MODE_CLOCK) {
     setupClockLayout();
   }
-
-  tft.setTextWrap(false);
 
   // Ensure 8-character fixed format: e.g. " 6:44:24" or "12:44:24"
   char curDigits[9];
@@ -267,17 +287,7 @@ void renderClock(const char *tStr, const char *ampm, const char *dStr) {
   }
 
   // ZERO-BLINK PER-CHARACTER UPDATE: Only redraw characters that actually changed!
-  tft.setTextSize(4);
-  tft.setTextColor(COL_WHITE, COL_BG);
-  for (int i = 0; i < 8; i++) {
-    char c = curDigits[i];
-    if (c != lastClockDigits[i]) {
-      tft.setCursor(CLK_START_X + i * 24, CLK_TIME_Y);
-      tft.print(c);
-      lastClockDigits[i] = c;
-    }
-  }
-  lastClockDigits[8] = 0;
+  renderClockDigits(curDigits);
 
   // AM / PM (TextSize 2, baseline aligned, drawn ONLY when AM/PM changes)
   if (strcmp(ampm, lastClockAmpm) != 0) {
@@ -509,6 +519,7 @@ void handleSong(char *payload) {
     drawHeader();
     currentMode = MODE_MUSIC;
     notifActive = false;
+    clockSynced = false;
   }
 
   char *p[6];
@@ -640,6 +651,17 @@ void handleClock(char *payload) {
   if (dLen < 4 || dLen > 24) return;
 
   state = 'S'; // Stop any ongoing music counter
+
+  // Sync internal clock components for autonomous second ticking
+  int h = 0, m = 0, s = 0;
+  if (sscanf(p[0], "%d:%d:%d", &h, &m, &s) == 3) {
+    clkHour     = h;
+    clkMin      = m;
+    clkSec      = s;
+    clkLastTick = millis();
+    clockSynced = true;
+  }
+
   renderClock(p[0], p[1], p[2]);
 }
 
@@ -797,6 +819,37 @@ void loop() {
   if (currentMode == MODE_CLOCK) {
     if (notifActive && millis() > notifExpireAt) {
       clearNotificationCard();
+    }
+
+    // Autonomous precision quartz ticker: advances seconds every 1000ms live
+    if (clockSynced && (millis() - clkLastTick >= 1000)) {
+      clkLastTick += 1000;
+      clkSec++;
+      if (clkSec >= 60) {
+        clkSec = 0;
+        clkMin++;
+        if (clkMin >= 60) {
+          clkMin = 0;
+          clkHour++;
+          if (clkHour == 12) {
+            if (strcmp(lastClockAmpm, "AM") == 0) strcpy(lastClockAmpm, "PM");
+            else strcpy(lastClockAmpm, "AM");
+            tft.setTextSize(2);
+            tft.setTextColor(COL_WHITE, COL_BG);
+            tft.setCursor(CLK_START_X + 8 * 24 + 4, CLK_AMPM_Y);
+            tft.print(lastClockAmpm);
+          } else if (clkHour > 12) {
+            clkHour = 1;
+          }
+        }
+      }
+      char tBuf[9];
+      if (clkHour < 10) {
+        snprintf(tBuf, sizeof(tBuf), " %d:%02d:%02d", clkHour, clkMin, clkSec);
+      } else {
+        snprintf(tBuf, sizeof(tBuf), "%d:%02d:%02d", clkHour, clkMin, clkSec);
+      }
+      renderClockDigits(tBuf);
     }
   }
 

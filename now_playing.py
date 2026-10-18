@@ -174,7 +174,39 @@ async def check_new_notification(listener, last_id: int) -> tuple[int, str, str]
     return None
 
 
-async def send_clock_dashboard(ser: serial.Serial, notif_listener, state_tracker: dict):
+async def telemetry_background_worker(notif_listener, state_tracker: dict):
+    """Background worker that continuously refreshes battery, Wi-Fi, Bluetooth, and notifications."""
+    while state_tracker.get("running", True):
+        try:
+            if state_tracker.get("clock_mode", False):
+                # 1. Instant Battery query (ctypes)
+                pct, chg = get_battery_info()
+                state_tracker["battery_pct"] = pct
+                state_tracker["charging"] = chg
+
+                # 2. Async Wi-Fi query (in thread so subprocess doesn't block event loop)
+                wifi = await asyncio.to_thread(get_wifi_ssid)
+                state_tracker["wifi"] = wifi
+
+                # 3. Bluetooth query (WinRT async)
+                bt = await get_bluetooth_device()
+                state_tracker["bt"] = bt
+
+                # 4. Check for toast notifications (WinRT, runs in background without blocking clock)
+                if notif_listener:
+                    new_notif = await check_new_notification(notif_listener, state_tracker.get("last_notif_id", 0))
+                    if new_notif:
+                        nid, napp, nmsg = new_notif
+                        state_tracker["last_notif_id"] = nid
+                        state_tracker["pending_notif"] = (napp, nmsg)
+        except Exception:
+            pass
+
+        await asyncio.sleep(2.0)
+
+
+def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
+    """Dispatches the live second clock tick, system telemetry, and notifications in <0.1ms."""
     now = datetime.now()
     t_str = f"{now.hour % 12 or 12:2d}:{now.minute:02d}:{now.second:02d}"
     ampm  = now.strftime("%p")
@@ -182,21 +214,20 @@ async def send_clock_dashboard(ser: serial.Serial, notif_listener, state_tracker
     ser.write(f"#CLOCK:{t_str}|{ampm}|{d_str}\n".encode("ascii"))
 
     cur_time = time.time()
-    if cur_time - state_tracker.get("last_sys_check", 0) >= 3.0:
-        pct, chg = get_battery_info()
-        wifi = get_wifi_ssid()
-        bt = await get_bluetooth_device()
-        sys_state = f"{pct}|{chg}|{wifi}|{bt}"
-        if sys_state != state_tracker.get("last_sys_state", "") or (cur_time - state_tracker.get("last_sys_sent", 0) >= 6.0):
-            ser.write(f"#SYS:{sys_state}\n".encode("ascii"))
-            state_tracker["last_sys_state"] = sys_state
-            state_tracker["last_sys_sent"] = cur_time
-        state_tracker["last_sys_check"] = cur_time
+    pct  = state_tracker.get("battery_pct", 100)
+    chg  = state_tracker.get("charging", 0)
+    wifi = state_tracker.get("wifi", "Disconnected")
+    bt   = state_tracker.get("bt", "None")
+    sys_state = f"{pct}|{chg}|{wifi}|{bt}"
 
-    new_notif = await check_new_notification(notif_listener, state_tracker.get("last_notif_id", 0))
-    if new_notif:
-        nid, napp, nmsg = new_notif
-        state_tracker["last_notif_id"] = nid
+    if sys_state != state_tracker.get("last_sys_state", "") or (cur_time - state_tracker.get("last_sys_sent", 0) >= 5.0):
+        ser.write(f"#SYS:{sys_state}\n".encode("ascii"))
+        state_tracker["last_sys_state"] = sys_state
+        state_tracker["last_sys_sent"] = cur_time
+
+    if state_tracker.get("pending_notif"):
+        napp, nmsg = state_tracker["pending_notif"]
+        state_tracker["pending_notif"] = None
         ser.write(f"#NOTIF:{napp}|{nmsg}\n".encode("ascii"))
 
 
@@ -349,109 +380,136 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
     last_track_id = ""
     paused_since: float | None = None
     clock_state = {
-        "last_sys_check": 0.0,
+        "battery_pct": 100,
+        "charging": 0,
+        "wifi": "Disconnected",
+        "bt": "None",
         "last_sys_sent": 0.0,
         "last_sys_state": "",
         "last_notif_id": initial_notif_id,
+        "pending_notif": None,
+        "clock_mode": False,
+        "running": True,
     }
 
-    while ser.is_open:
-        ses = await get_best_session(mgr)
+    try:
+        pct, chg = get_battery_info()
+        clock_state["battery_pct"] = pct
+        clock_state["charging"] = chg
+        clock_state["wifi"] = get_wifi_ssid()
+    except Exception:
+        pass
 
-        # ── Standby / No Media Session -> Clock Mode ──
-        if ses is None:
-            await send_clock_dashboard(ser, notif_listener, clock_state)
-            last_track_id = ""
-            paused_since = None
-            await asyncio.sleep(1.0)
-            continue
+    worker_task = asyncio.create_task(telemetry_background_worker(notif_listener, clock_state))
 
-        try:
-            props  = await ses.try_get_media_properties_async()
-            tl     = ses.get_timeline_properties()
-            info   = ses.get_playback_info()
-            status = info.playback_status if info else PlayStatus.STOPPED
-        except Exception:
-            await asyncio.sleep(0.3)
-            continue
+    try:
+        while ser.is_open:
+            ses = await get_best_session(mgr)
 
-        pos, dur, flag = compute_position(tl, status)
-
-        # ── Pause / Idle detection -> Freeze timer and transition to Clock ──
-        if status != PlayStatus.PLAYING:
-            if paused_since is None:
-                paused_since = time.time()
-                # Immediately freeze timer and draw PAUSED badge
-                ser.write(f"#T:{pos}:{dur}:S\n".encode("ascii"))
-            elif time.time() - paused_since >= 8.0:
-                # 8 seconds of continuous pause: Switch to sleek Standby Clock Dashboard
-                await send_clock_dashboard(ser, notif_listener, clock_state)
-                await asyncio.sleep(1.0)
-                continue
-            else:
-                ser.write(f"#T:{pos}:{dur}:S\n".encode("ascii"))
-                await asyncio.sleep(0.4)
-                continue
-        else:
-            if paused_since is not None and paused_since > 0:
-                # Waking up from pause: force immediate refresh
+            # ── Standby / No Media Session -> Clock Mode ──
+            if ses is None:
+                clock_state["clock_mode"] = True
+                send_clock_dashboard(ser, clock_state)
                 last_track_id = ""
-            paused_since = None
+                paused_since = None
+                now = datetime.now()
+                ms_left = (1_000_000 - now.microsecond) / 1_000_000.0
+                await asyncio.sleep(max(0.05, ms_left))
+                continue
 
-        t  = clean(props.title) if props else ""
-        ar = clean(props.artist or props.album_artist or "") if props else ""
-        al = clean(props.album_title or "") if props else ""
-        if not ar:
-            ar = al or "Spotify"
-
-        track_key = f"{t}:::{ar}"
-
-        # ── Track changed: trigger ONLY when title or artist actually changes ──
-        if t and track_key != last_track_id:
-            await asyncio.sleep(0.20)
             try:
                 props  = await ses.try_get_media_properties_async()
                 tl     = ses.get_timeline_properties()
                 info   = ses.get_playback_info()
                 status = info.playback_status if info else PlayStatus.STOPPED
-                t  = clean(props.title) if props else t
-                ar = clean(props.artist or props.album_artist or "") if props else ar
-                al = clean(props.album_title or "") if props else al
-                if not ar:
-                    ar = al or "Spotify"
-                pos, dur, flag = compute_position(tl, status)
-                track_key = f"{t}:::{ar}"
             except Exception:
-                pass
+                await asyncio.sleep(0.3)
+                continue
 
-            # Immediately send title, artist, duration, current position, and play/pause state!
-            song_cmd = f"#SONG:{t}|{ar}|{al}|{dur}|{pos}|{flag}\n"
-            ser.write(song_cmd.encode("ascii"))
-            await asyncio.sleep(0.04)
+            pos, dur, flag = compute_position(tl, status)
 
-            # Stream cover with active mid-stream abort check
-            cover = await extract_cover_rgb565(props)
-            if cover:
-                success = await send_cover_async(ser, cover, ses, track_key)
-                if not success:
+            # ── Pause / Idle detection -> Freeze timer and transition to Clock ──
+            if status != PlayStatus.PLAYING:
+                if paused_since is None:
+                    paused_since = time.time()
+                    # Immediately freeze timer and draw PAUSED badge
+                    ser.write(f"#T:{pos}:{dur}:S\n".encode("ascii"))
+                elif time.time() - paused_since >= 8.0:
+                    # 8 seconds of continuous pause: Switch to sleek Standby Clock Dashboard
+                    clock_state["clock_mode"] = True
+                    send_clock_dashboard(ser, clock_state)
+                    now = datetime.now()
+                    ms_left = (1_000_000 - now.microsecond) / 1_000_000.0
+                    await asyncio.sleep(max(0.05, ms_left))
+                    continue
+                else:
+                    ser.write(f"#T:{pos}:{dur}:S\n".encode("ascii"))
+                    await asyncio.sleep(0.4)
                     continue
             else:
-                ser.write(b"#NOIMG\n")
+                clock_state["clock_mode"] = False
+                if paused_since is not None and paused_since > 0:
+                    # Waking up from pause: force immediate refresh
+                    last_track_id = ""
+                paused_since = None
 
-            last_track_id = track_key
+            t  = clean(props.title) if props else ""
+            ar = clean(props.artist or props.album_artist or "") if props else ""
+            al = clean(props.album_title or "") if props else ""
+            if not ar:
+                ar = al or "Spotify"
 
-            try:
-                tl = ses.get_timeline_properties()
-                info = ses.get_playback_info()
-                status = info.playback_status if info else PlayStatus.STOPPED
-                pos, dur, flag = compute_position(tl, status)
-            except Exception:
-                pass
+            track_key = f"{t}:::{ar}"
 
-        # ── Send Live Time Update ──
-        time_cmd = f"#T:{pos}:{dur}:{flag}\n"
-        ser.write(time_cmd.encode("ascii"))
-        await asyncio.sleep(0.4)
+            # ── Track changed: trigger ONLY when title or artist actually changes ──
+            if t and track_key != last_track_id:
+                await asyncio.sleep(0.20)
+                try:
+                    props  = await ses.try_get_media_properties_async()
+                    tl     = ses.get_timeline_properties()
+                    info   = ses.get_playback_info()
+                    status = info.playback_status if info else PlayStatus.STOPPED
+                    t  = clean(props.title) if props else t
+                    ar = clean(props.artist or props.album_artist or "") if props else ar
+                    al = clean(props.album_title or "") if props else al
+                    if not ar:
+                        ar = al or "Spotify"
+                    pos, dur, flag = compute_position(tl, status)
+                    track_key = f"{t}:::{ar}"
+                except Exception:
+                    pass
+
+                # Immediately send title, artist, duration, current position, and play/pause state!
+                song_cmd = f"#SONG:{t}|{ar}|{al}|{dur}|{pos}|{flag}\n"
+                ser.write(song_cmd.encode("ascii"))
+                await asyncio.sleep(0.04)
+
+                # Stream cover with active mid-stream abort check
+                cover = await extract_cover_rgb565(props)
+                if cover:
+                    success = await send_cover_async(ser, cover, ses, track_key)
+                    if not success:
+                        continue
+                else:
+                    ser.write(b"#NOIMG\n")
+
+                last_track_id = track_key
+
+                try:
+                    tl = ses.get_timeline_properties()
+                    info = ses.get_playback_info()
+                    status = info.playback_status if info else PlayStatus.STOPPED
+                    pos, dur, flag = compute_position(tl, status)
+                except Exception:
+                    pass
+
+            # ── Send Live Time Update ──
+            time_cmd = f"#T:{pos}:{dur}:{flag}\n"
+            ser.write(time_cmd.encode("ascii"))
+            await asyncio.sleep(0.4)
+    finally:
+        clock_state["running"] = False
+        worker_task.cancel()
 
 
 async def main():
