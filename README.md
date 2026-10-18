@@ -16,6 +16,7 @@ Communicating over high-speed serial with a lightweight Windows background servi
   - 📶 **Connected Wi-Fi Network**: Shows your active Wi-Fi SSID (e.g. `Nothing Phone 2A`).
   - 🎧 **Connected Bluetooth Device**: Displays currently connected Bluetooth headphones, speaker, or audio device.
   - 🔔 **Real-Time Notification Popups**: Toast notifications (WhatsApp, Telegram, Slack, System) pop up in a sleek bottom card and auto-dismiss after 12 seconds.
+- 🔊 **Hardware Rotary Volume Knob**: Connect a potentiometer (10kΩ to 50kΩ, linear or logarithmic) to analog pin `A5`. Rotating the knob smoothly controls Windows master system volume (0–100%) and triggers the native Windows on-screen volume flyout / OSD banner in real time.
 - ⏱️ **Real-Time Synchronized Progress Bar & Scrubber**: Live seconds counter and progress knob synchronized with Windows Media Controls.
 - ⏸️ **Instant Freeze on Pause**: Elapsed timer stops immediately when paused, displaying a clean `PAUSED` badge without drifting.
 - 🔁 **Instant Music Wake-Up**: As soon as music resumes, the screen wakes instantly from clock mode and renders the track view.
@@ -30,12 +31,13 @@ Communicating over high-speed serial with a lightweight Windows background servi
 | :--- | :--- | :--- |
 | **Arduino UNO R3** | Standard ATmega328P development board (or compatible clone with CH340 / ATmega16U2) | 1 |
 | **2.4" or 2.8" TFT LCD Shield** | 240x320 resolution, 8-bit parallel interface (MCUFRIEND / ILI9341 / ST7789 compatible) | 1 |
+| **Potentiometer (Rotary Knob)** | 10kΩ to 50kΩ linear/log potentiometer (e.g., 47kΩ 6-pin dual-gang or 10kΩ 3-pin) *(Optional)* | 1 |
 | **USB Cable** | USB Type-A to Type-B cable for power and serial communication | 1 |
 | **Windows PC** | Windows 10 or Windows 11 running the Spotify Desktop application | 1 |
 
 > [!TIP]
-> **No Soldering or Jumper Wires Required!**  
-> The TFT LCD Shield is designed to plug directly on top of the Arduino UNO header sockets.
+> **Minimal Wiring!**  
+> The TFT LCD Shield plugs directly on top of the Arduino UNO header sockets. If using the volume knob, only 3 jumper wires are needed.
 
 ---
 
@@ -43,7 +45,12 @@ Communicating over high-speed serial with a lightweight Windows background servi
 
 1. Align the header pins of the **TFT LCD Shield** with the female headers on the **Arduino UNO**.
 2. Press down firmly and evenly until the shield sits flush on top of the Arduino board.
-3. Connect the Arduino to your computer using the USB Type-B cable.
+3. *(Optional) Connect Volume Potentiometer*:
+   - Pin 1 (Outer pin): Connect to Arduino **GND**
+   - Pin 2 (Middle wiper pin): Connect to Arduino **A5**
+   - Pin 3 (Outer pin): Connect to Arduino **5V**
+   *(Note: For 6-pin dual-gang potentiometers, simply use one row of 3 pins).*
+4. Connect the Arduino to your computer using the USB Type-B cable.
 
 ---
 
@@ -152,6 +159,7 @@ Communication runs at **115200 baud** over USB Serial.
 | `#CLOCK:time\|ampm\|date` | Host → Arduino | Standby clock update with differential digit rendering. |
 | `#SYS:batt\|chg\|wifi\|bt` | Host → Arduino | System telemetry: Battery %, Charging flag, Wi-Fi SSID, BT device. |
 | `#NOTIF:app\|msg` | Host → Arduino | Live toast notification popup banner on standby screen. |
+| `#VOL:<0-100>` | Arduino → Host | Real-time potentiometer volume percentage (0–100%) when turned. |
 
 ---
 

@@ -11,6 +11,7 @@
 # ============================================================================
 
 import asyncio
+import concurrent.futures
 import ctypes
 from datetime import datetime, timezone
 import io
@@ -252,8 +253,15 @@ def get_audio_endpoint():
     return _cached_audio_endpoint
 
 
+_last_applied_vol = -1
+
 def set_system_volume(vol_pct: int):
     """Sets master volume (0-100%) and triggers the live native Windows volume popup (OSD)."""
+    global _last_applied_vol
+    if vol_pct == _last_applied_vol:
+        return
+    _last_applied_vol = vol_pct
+
     ep = get_audio_endpoint()
     if not ep:
         return
@@ -379,16 +387,57 @@ async def extract_cover_rgb565(props) -> bytes | None:
         return None
 
 
+_cover_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+def _extract_cover_sync():
+    """Extracts thumbnail stream in dedicated thread to prevent WinRT COM apartment deadlocks."""
+    async def _extract():
+        mgr = await SessionManager.request_async()
+        ses = await get_best_session(mgr)
+        props = await ses.try_get_media_properties_async() if ses else None
+        if not props or not props.thumbnail:
+            return None
+        return await extract_cover_rgb565(props)
+    try:
+        return asyncio.run(_extract())
+    except Exception:
+        return None
+
+async def extract_cover_safe() -> bytes | None:
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_cover_executor, _extract_cover_sync),
+            timeout=2.0
+        )
+    except Exception:
+        return None
+
+
 async def send_cover_async(ser: serial.Serial, img_bytes: bytes, ses, active_track_key: str) -> bool:
     """Stream 200 rows with active mid-stream skip detection."""
+    # Drain any buffered lines (e.g. #VOL) before sending #IMG_START
+    while ser.in_waiting > 0:
+        chunk = ser.read(ser.in_waiting)
+        try:
+            for part in chunk.decode("ascii", errors="ignore").split("\n"):
+                if part.strip().startswith("#VOL:"):
+                    set_system_volume(int(part.strip()[5:]))
+        except Exception:
+            pass
+
     ser.write(b"#IMG_START\n")
 
+    ack = None
     t0 = time.time()
-    while ser.in_waiting == 0:
-        await asyncio.sleep(0.01)
-        if time.time() - t0 > 2.0:
-            return False
-    ack = ser.read(1)
+    while time.time() - t0 < 2.0:
+        if ser.in_waiting > 0:
+            b = ser.read(1)
+            if b == b'K':
+                ack = b'K'
+                break
+        await asyncio.sleep(0.005)
+
     if ack != b'K':
         return False
 
@@ -416,12 +465,16 @@ async def send_cover_async(ser: serial.Serial, img_bytes: bytes, ses, active_tra
         row_data = img_bytes[r * row_bytes : (r + 1) * row_bytes]
         ser.write(b"#L" + bytes([r]) + row_data)
 
+        ack = None
         t0 = time.time()
-        while ser.in_waiting == 0:
-            await asyncio.sleep(0.005)
-            if time.time() - t0 > 1.5:
-                return False
-        ack = ser.read(1)
+        while time.time() - t0 < 1.5:
+            if ser.in_waiting > 0:
+                b = ser.read(1)
+                if b == b'K':
+                    ack = b'K'
+                    break
+            await asyncio.sleep(0.002)
+
         if ack != b'K':
             return False
 
@@ -559,13 +612,11 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
                 await asyncio.sleep(0.04)
 
                 # Stream cover with active mid-stream abort check
-                cover = await extract_cover_rgb565(props)
+                cover = await extract_cover_safe()
                 if cover:
                     clock_state["streaming_cover"] = True
                     try:
-                        success = await send_cover_async(ser, cover, ses, track_key)
-                        if not success:
-                            continue
+                        await send_cover_async(ser, cover, ses, track_key)
                     finally:
                         clock_state["streaming_cover"] = False
                 else:

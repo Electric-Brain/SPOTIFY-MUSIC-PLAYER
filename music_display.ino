@@ -465,7 +465,7 @@ void receiveCoverImage() {
   for (int row = 0; row < ART_SIZE; row++) {
     unsigned long t0 = millis();
     while (Serial.available() < 3) {
-      if (millis() - t0 > 2500) return;
+      if (millis() - t0 > 800) return;
     }
 
     char c1 = Serial.read();
@@ -494,7 +494,7 @@ void receiveCoverImage() {
           bp[got++] = Serial.read();
         }
         t0 = millis();
-      } else if (millis() - t0 > 1500) {
+      } else if (millis() - t0 > 600) {
         return;
       }
     }
@@ -775,8 +775,9 @@ void checkVolumePot() {
   filteredAdc = filteredAdc * 0.70 + sample * 0.30;
   int raw = (int)(filteredAdc + 0.5);
 
-  // Deadband: must move by at least 8 ADC counts to trigger (avoids resting flutter)
-  if (abs(raw - lastSentRaw) >= 8) {
+  // Deadband: must move by at least 10 ADC counts (~1%) to trigger (avoids resting flutter)
+  if (abs(raw - lastSentRaw) >= 10) {
+    lastSentRaw = raw;
     int clamped = constrain(raw, 10, 1014);
     int vol = map(clamped, 10, 1014, 0, 100);
     vol = constrain(vol, 0, 100);
@@ -784,7 +785,6 @@ void checkVolumePot() {
       Serial.print(F("#VOL:"));
       Serial.println(vol);
       lastSentVol = vol;
-      lastSentRaw = raw;
     }
   }
 }
