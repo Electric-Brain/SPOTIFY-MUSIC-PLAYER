@@ -138,7 +138,19 @@ unsigned long clkLastTick   = 0;
 
 void fmtTime(char *buf, long s) {
   if (s < 0) s = 0;
-  snprintf(buf, 6, "%2ld:%02ld", s / 60, s % 60);
+  long m = s / 60;
+  long sec = s % 60;
+  if (m >= 10) {
+    buf[0] = '0' + (m / 10);
+    buf[1] = '0' + (m % 10);
+  } else {
+    buf[0] = ' ';
+    buf[1] = '0' + m;
+  }
+  buf[2] = ':';
+  buf[3] = '0' + (sec / 10);
+  buf[4] = '0' + (sec % 10);
+  buf[5] = 0;
 }
 
 void printCleanText(int x, int y, const char *src, int maxCh, uint16_t fg, int sz) {
@@ -519,7 +531,21 @@ void drawVolumeWidget(int vol) {
   // 3. Percentage Text (TextSize 2, green, e.g. " 75%")
   if (vol != lastVolDisp) {
     char vBuf[6];
-    snprintf(vBuf, sizeof(vBuf), "%3d%%", vol);
+    if (vol >= 100) {
+      strcpy(vBuf, "100%");
+    } else if (vol >= 10) {
+      vBuf[0] = ' ';
+      vBuf[1] = '0' + (vol / 10);
+      vBuf[2] = '0' + (vol % 10);
+      vBuf[3] = '%';
+      vBuf[4] = 0;
+    } else {
+      vBuf[0] = ' ';
+      vBuf[1] = ' ';
+      vBuf[2] = '0' + vol;
+      vBuf[3] = '%';
+      vBuf[4] = 0;
+    }
     tft.setTextSize(2);
     tft.setTextColor(COL_GREEN, COL_BG);
     tft.setCursor(168, y);
@@ -753,13 +779,16 @@ void handleClock(char *payload) {
   state = 'S'; // Stop any ongoing music counter
 
   // Sync internal clock components for autonomous second ticking
-  int h = 0, m = 0, s = 0;
-  if (sscanf(p[0], "%d:%d:%d", &h, &m, &s) == 3) {
-    clkHour     = h;
-    clkMin      = m;
-    clkSec      = s;
-    clkLastTick = millis();
-    clockSynced = true;
+  char *c1 = strchr(p[0], ':');
+  if (c1) {
+    char *c2 = strchr(c1 + 1, ':');
+    if (c2) {
+      clkHour     = atoi(p[0]);
+      clkMin      = atoi(c1 + 1);
+      clkSec      = atoi(c2 + 1);
+      clkLastTick = millis();
+      clockSynced = true;
+    }
   }
 
   renderClock(p[0], p[1], p[2]);
