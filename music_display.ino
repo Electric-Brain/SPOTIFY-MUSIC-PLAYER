@@ -1,15 +1,16 @@
 // ============================================================================
-//   SPOTIFY NOW PLAYING - PORTRAIT (VERTICAL) WITH 200x200 COVER ART
+//   SPOTIFY NOW PLAYING - ULTIMATE DEDICATED DISPLAY (PORTRAIT 240x320)
 //   Hardware: Arduino UNO + MCUFRIEND 2.4" / 2.8" / 3.5" TFT Shield
 // ============================================================================
-// Fixes in this update:
-//   1. 100% Reliable Full Image Render: Dedicated atomic 400-byte row read
-//      guarantees zero serial FIFO buffer overflow. ACK 'K' is sent only AFTER
-//      row is drawn and time is updated.
-//   2. Immediate Track Reset: posSync & syncAt reset to 0 immediately on #SONG.
-//      Time displays " 0:00" instantly (no old song timestamp like 0:21).
-//   3. Fixed-width 5-char time strings eliminate trailing dashes/characters.
-//   4. Clean progress bar: Scrubber knob clearance strictly managed.
+// Features:
+//   - Pure dedicated Spotify display with 100% space efficiency.
+//   - Massive 200x200 Album Cover Art (Full screen width utilization).
+//   - High-Precision Sharp Spotify Vector Logo Header.
+//   - Instant Mid-Stream Cancellation (#A) on song skip (<80ms).
+//   - Smooth Zero-Blink Live Seconds Counter & Lowered Scrubber Knob.
+//   - Standby Clock Mode: Minimalist Digital Clock when paused or closed.
+//   - Instant Wake-Up the moment Spotify plays music.
+//   - Frozen timer when paused (zero phantom increments).
 // ============================================================================
 
 #include <Adafruit_GFX.h>
@@ -18,22 +19,23 @@
 MCUFRIEND_kbv tft;
 
 // ---------- Screen Rotation ----------
-#define ROTATION 0 // 0 = Portrait (USB at bottom), 2 = Portrait (USB at top)
+#define ROTATION 0 // 0 = Portrait (USB at bottom)
 
 // ---------- Spotify Colors (RGB565) ----------
 #define COL_BG          0x0000  // Pure black background
 #define COL_SURFACE     0x1082  // #121212 dark surface
+#define COL_CARD        0x18C3  // #181818 card fill
 #define COL_BORDER      0x2945  // #282828 subtle borders
-#define COL_GREEN       0x1EAC  // #1ED760 Vibrant Spotify green
+#define COL_GREEN       0x1EAC  // #1ED760 Spotify green
 #define COL_WHITE       0xFFFF  // Primary text / scrubber knob
 #define COL_GRAY_LT     0xB576  // #B3B3B3 secondary text / duration
 #define COL_GRAY_MD     0x7BEF  // #7A7A7A dim labels
-#define COL_TRACK       0x39E7  // #3E3E3E progress bar groove
+#define COL_TRACK       0x39E7  // #3E3E3E progress groove
 
 // ---------- Layout Dimensions (Portrait 240x320) ----------
 #define HDR_H           28
 #define ART_SIZE        200     // 200x200 Cover Art (Maximized width)
-#define ART_X           20      // 20px margin on left, 20px on right
+#define ART_X           20      // Centered: 20px margin left/right
 #define ART_Y           32      // y = 32..231
 #define TXT_X           12
 #define TITLE_Y         238     // y = 238..254 (TextSize 2)
@@ -55,18 +57,26 @@ const unsigned char PROGMEM logo24[] = {
   0x0F, 0xFF, 0xF0, 0x07, 0xFF, 0xE0, 0x03, 0xFF, 0xC0, 0x00, 0x7E, 0x00
 };
 
-// ---------- Global State Variables ----------
+// ---------- Display Modes ----------
+enum DisplayMode {
+  MODE_BOOT,
+  MODE_MUSIC,
+  MODE_CLOCK
+};
+DisplayMode currentMode = MODE_BOOT;
+
+// ---------- Global Music Player State ----------
 char title[50]  = "";
 char artist[50] = "";
 char album[50]  = "";
 long dur = 0, posSync = 0;
 unsigned long syncAt = 0;
-char state = 'N';
+char state = 'N';          // 'P' = playing, 'S' = paused, 'N' = standby
 char prevState = ' ';
 bool hasCover = false;
 
 // Serial Line Buffer
-char lineBuf[130];
+char lineBuf[180];
 byte lineIdx = 0;
 
 // Differential Trackers
@@ -75,13 +85,25 @@ int  lastKnobX = -1;
 char lastL[8]  = "";
 char lastR[8]  = "";
 
-// ---------- Helper: Format seconds to strictly 5 chars " M:SS" ----------
+// Clock Differential Trackers
+#define CLK_START_X 9
+#define CLK_TIME_Y  124
+#define CLK_AMPM_Y  138
+#define CLK_DATE_Y  175
+
+char lastClockDigits[9] = "";
+char lastClockAmpm[6]   = "";
+char lastClockDate[24]  = "";
+
+// ═══════════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════════
+
 void fmtTime(char *buf, long s) {
   if (s < 0) s = 0;
   snprintf(buf, 6, "%2ld:%02ld", s / 60, s % 60);
 }
 
-// ---------- Print Clean Text (Wipes bounding box first) ----------
 void printCleanText(int x, int y, const char *src, int maxCh, uint16_t fg, int sz) {
   int charW = 6 * sz;
   int charH = 8 * sz;
@@ -107,7 +129,6 @@ void printCleanText(int x, int y, const char *src, int maxCh, uint16_t fg, int s
   tft.print(buf);
 }
 
-// ---------- Draw Header ----------
 void drawHeader() {
   tft.fillRect(0, 0, 240, HDR_H, COL_BG);
   tft.drawBitmap(8, 2, logo24, 24, 24, COL_GREEN, COL_BG);
@@ -118,7 +139,6 @@ void drawHeader() {
   tft.drawFastHLine(0, HDR_H, 240, COL_BORDER);
 }
 
-// ---------- Status Badge (Top Right) ----------
 void drawStatusBadge(char s) {
   tft.fillRect(150, 2, 88, 23, COL_BG);
   uint16_t col;
@@ -134,7 +154,10 @@ void drawStatusBadge(char s) {
   tft.print(txt);
 }
 
-// ---------- Progress Bar Renderer (Zero Uneven Dots) ----------
+// ═══════════════════════════════════════════════════════════════════
+//  PROGRESS BAR & LIVE SECONDS
+// ═══════════════════════════════════════════════════════════════════
+
 void renderProgressBar(long posNow) {
   int fw = 0;
   if (dur > 0) {
@@ -143,32 +166,26 @@ void renderProgressBar(long posNow) {
   }
 
   if (fw != lastFw) {
-    // 1. Wipe previous knob protrusion above & below bar with BLACK
     if (lastKnobX >= 0) {
       tft.fillRect(lastKnobX - 4, BAR_Y - 3, 9, 3, COL_BG);
       tft.fillRect(lastKnobX - 4, BAR_Y + BAR_H, 9, 3, COL_BG);
     }
-
-    // 2. Repaint green progress portion
     if (fw > 0) {
       tft.fillRoundRect(BAR_X, BAR_Y, fw, BAR_H, 2, COL_GREEN);
     }
-    // 3. Repaint gray groove track
     if (fw < BAR_W) {
       tft.fillRoundRect(BAR_X + fw, BAR_Y, BAR_W - fw, BAR_H, 2, COL_TRACK);
     }
-
-    // 4. Draw white circular knob at current position
     int knobX = BAR_X + fw;
     tft.fillCircle(knobX, BAR_Y + BAR_H / 2, 4, COL_WHITE);
-
     lastKnobX = knobX;
     lastFw = fw;
   }
 }
 
-// ---------- Live Progress & Seconds Update (Non-Stop, Zero Blink) ----------
 void updateLiveProgress() {
+  if (currentMode != MODE_MUSIC) return;
+
   long posNow = posSync;
   if (state == 'P' && dur > 0) {
     posNow += (long)(millis() - syncAt) / 1000;
@@ -189,25 +206,106 @@ void updateLiveProgress() {
   }
 }
 
-// ---------- Streamed 200x200 Cover Image Receiver (100% Reliable) ----------
+// ═══════════════════════════════════════════════════════════════════
+//  STANDBY CLOCK (PORTRAIT 240x320)
+// ═══════════════════════════════════════════════════════════════════
+
+void setupClockLayout() {
+  tft.fillScreen(COL_BG);
+  currentMode = MODE_CLOCK;
+
+  memset(lastClockDigits, 0, sizeof(lastClockDigits));
+  memset(lastClockAmpm,   0, sizeof(lastClockAmpm));
+  memset(lastClockDate,   0, sizeof(lastClockDate));
+}
+
+void renderClock(const char *tStr, const char *ampm, const char *dStr) {
+  if (currentMode != MODE_CLOCK) {
+    setupClockLayout();
+  }
+
+  // Ensure 8-character fixed format: e.g. " 6:44:24" or "12:44:24"
+  char curDigits[9];
+  int rawLen = strlen(tStr);
+  if (rawLen == 7) {
+    curDigits[0] = ' ';
+    strncpy(curDigits + 1, tStr, 7);
+    curDigits[8] = 0;
+  } else {
+    strncpy(curDigits, tStr, 8);
+    curDigits[8] = 0;
+  }
+
+  // ZERO-BLINK PER-CHARACTER UPDATE: Only redraw characters that actually changed!
+  tft.setTextSize(4);
+  tft.setTextColor(COL_WHITE, COL_BG);
+  for (int i = 0; i < 8; i++) {
+    char c = curDigits[i];
+    if (c != lastClockDigits[i]) {
+      tft.setCursor(CLK_START_X + i * 24, CLK_TIME_Y);
+      tft.print(c);
+      lastClockDigits[i] = c;
+    }
+  }
+  lastClockDigits[8] = 0;
+
+  // AM / PM (TextSize 2, baseline aligned, drawn ONLY when AM/PM changes)
+  if (strcmp(ampm, lastClockAmpm) != 0) {
+    tft.setTextSize(2);
+    tft.setTextColor(COL_WHITE, COL_BG);
+    tft.setCursor(CLK_START_X + 8 * 24 + 6, CLK_AMPM_Y);
+    tft.print(ampm);
+    strcpy(lastClockAmpm, ampm);
+  }
+
+  // Date (Centered TextSize 2, drawn ONLY when date changes at midnight)
+  if (strcmp(dStr, lastClockDate) != 0) {
+    int dLen = strlen(dStr);
+    int dateX = (240 - dLen * 12) / 2;
+    if (dateX < 6) dateX = 6;
+
+    tft.fillRect(0, CLK_DATE_Y - 2, 240, 20, COL_BG);
+    tft.setTextSize(2);
+    tft.setTextColor(COL_GRAY_LT, COL_BG);
+    tft.setCursor(dateX, CLK_DATE_Y);
+    tft.print(dStr);
+
+    strcpy(lastClockDate, dStr);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  COVER IMAGE RECEIVER (WITH FAST MID-STREAM ABORT SUPPORT)
+// ═══════════════════════════════════════════════════════════════════
+
 void receiveCoverImage() {
-  Serial.write('K'); // ACK start command
+  Serial.write('K'); // ACK start
 
   uint16_t rowBuf[ART_SIZE];
   uint8_t *bp = (uint8_t *)rowBuf;
 
   for (int row = 0; row < ART_SIZE; row++) {
-    // 1. Wait for row header '#' 'L' <row_idx>
     unsigned long t0 = millis();
     while (Serial.available() < 3) {
-      if (millis() - t0 > 2500) return; // Timeout abort
-    }
-    if (Serial.read() != '#' || Serial.read() != 'L' || Serial.read() != row) {
-      return; // Sync lost
+      if (millis() - t0 > 2500) return;
     }
 
-    // 2. Read exactly 400 bytes in a dedicated loop (NO TFT calls here to prevent FIFO overflow!)
-    int need = ART_SIZE * 2; // 400 bytes
+    char c1 = Serial.read();
+    char c2 = Serial.read();
+    byte r  = Serial.read();
+
+    // Check for Abort signal (#A) from PC when user switches song mid-stream
+    if (c1 == '#' && c2 == 'A') {
+      tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_BG);
+      tft.drawRoundRect(ART_X - 2, ART_Y - 2, ART_SIZE + 4, ART_SIZE + 4, 4, COL_BORDER);
+      return; // Instantly exit and return to loop() to receive new song!
+    }
+
+    if (c1 != '#' || c2 != 'L' || r != row) {
+      return;
+    }
+
+    int need = ART_SIZE * 2;
     int got  = 0;
     t0 = millis();
     while (got < need) {
@@ -217,32 +315,37 @@ void receiveCoverImage() {
         for (int i = 0; i < chunk; i++) {
           bp[got++] = Serial.read();
         }
-        t0 = millis(); // Reset timeout watchdog on active progress
+        t0 = millis();
       } else if (millis() - t0 > 1500) {
-        return; // Timeout abort
+        return;
       }
     }
 
-    // 3. Blit row to TFT GRAM
     tft.setAddrWindow(ART_X, ART_Y + row, ART_X + ART_SIZE - 1, ART_Y + row);
     tft.pushColors(rowBuf, ART_SIZE, true);
 
-    // 4. Update the live seconds clock now (safely AFTER bytes are read!)
     updateLiveProgress();
-
-    // 5. Send ACK 'K' to tell Python to send the next row
     Serial.write('K');
   }
 
   hasCover = true;
 }
 
-// ---------- Handle New Track Command ----------
+// ═══════════════════════════════════════════════════════════════════
+//  COMMAND HANDLERS
+// ═══════════════════════════════════════════════════════════════════
+
 void handleSong(char *payload) {
-  char *p[4];
+  if (currentMode != MODE_MUSIC) {
+    tft.fillScreen(COL_BG);
+    drawHeader();
+    currentMode = MODE_MUSIC;
+  }
+
+  char *p[6];
   byte k = 0;
   p[k++] = payload;
-  for (char *c = payload; *c && k < 4; c++) {
+  for (char *c = payload; *c && k < 6; c++) {
     if (*c == '|') { *c = 0; p[k++] = c + 1; }
   }
   if (k < 2) return;
@@ -251,29 +354,27 @@ void handleSong(char *payload) {
   strncpy(artist, p[1], 49); artist[49] = 0;
   if (k >= 3) { strncpy(album, p[2], 49); album[49] = 0; }
   else album[0] = 0;
-  if (k >= 4) dur = atol(p[3]);
+  dur = (k >= 4) ? atol(p[3]) : 0;
+  posSync = (k >= 5) ? atol(p[4]) : 0;
+  state = (k >= 6 && p[5][0]) ? p[5][0] : 'P';
+  prevState = state;
 
-  // CRITICAL: Reset position and timer to 0 immediately!
-  posSync = 0;
   syncAt = millis();
-  state = 'P';
   hasCover = false;
 
-  // Clear cover box cleanly (no flash of previous song)
+  // Clear player elements cleanly
   tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_BG);
   tft.drawRoundRect(ART_X - 2, ART_Y - 2, ART_SIZE + 4, ART_SIZE + 4, 4, COL_BORDER);
 
-  // Print Title & Artist
   printCleanText(TXT_X, TITLE_Y,  title,  MAX_CH, COL_WHITE,   2);
   printCleanText(TXT_X, ARTIST_Y, artist, MAX_CH, COL_GRAY_LT, 2);
 
-  // Reset progress bar groove completely
   tft.fillRect(BAR_X - 4, BAR_Y - 4, BAR_W + 8, BAR_H + 8, COL_BG);
   tft.fillRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, 2, COL_TRACK);
   lastFw    = -1;
   lastKnobX = -1;
 
-  // Immediately draw total duration (Right)
+  // Total Duration (Right)
   char nr[8];
   if (dur > 0) fmtTime(nr, dur);
   else strcpy(nr, "--:--");
@@ -283,18 +384,25 @@ void handleSong(char *payload) {
   tft.print(nr);
   strcpy(lastR, nr);
 
-  // Immediately draw 0:00 elapsed (Left)
+  // Initial Elapsed Time (Left) - reflects actual position
   char nl[8];
-  fmtTime(nl, 0);
+  fmtTime(nl, posSync);
   tft.setTextSize(2);
   tft.setTextColor(COL_WHITE, COL_BG);
   tft.setCursor(BAR_X, TIME_Y);
   tft.print(nl);
   strcpy(lastL, nl);
+
+  // Initial Progress Bar & Scrubber position
+  renderProgressBar(posSync);
+
+  // Status badge ('PLAYING' or 'PAUSED')
+  drawStatusBadge(state);
 }
 
-// ---------- Handle Live Time Update ----------
 void handleTimeUpdate(char *payload) {
+  if (currentMode != MODE_MUSIC) return;
+
   char *p[3];
   byte k = 0;
   p[k++] = payload;
@@ -307,15 +415,13 @@ void handleTimeUpdate(char *payload) {
   dur         = atol(p[1]);
   state       = p[2][0];
 
-  // If a song has just started and we already ticked forward (e.g. 2, 3, or 4s)
-  // while rendering cover art, do not let an accidental stale 0 snap the clock backward!
   long currentPos = posSync;
   if (state == 'P' && dur > 0) {
     currentPos += (long)(millis() - syncAt) / 1000;
   }
 
   if (newPos == 0 && currentPos > 1 && currentPos < 10) {
-    // Ignore stale 0 right after song start: keep the clock moving!
+    // Ignore stale zero right after song start
   } else {
     posSync = newPos;
     syncAt  = millis();
@@ -325,9 +431,33 @@ void handleTimeUpdate(char *payload) {
     drawStatusBadge(state);
     prevState = state;
   }
+
+  // Update total duration text if it changed
+  char nr[8];
+  if (dur > 0) fmtTime(nr, dur);
+  else strcpy(nr, "--:--");
+  if (strcmp(nr, lastR) != 0) {
+    tft.setTextSize(2);
+    tft.setTextColor(COL_GRAY_LT, COL_BG);
+    tft.setCursor(172, TIME_Y);
+    tft.print(nr);
+    strcpy(lastR, nr);
+  }
 }
 
-// ---------- Command Dispatcher ----------
+void handleClock(char *payload) {
+  char *p[3];
+  byte k = 0;
+  p[k++] = payload;
+  for (char *c = payload; *c && k < 3; c++) {
+    if (*c == '|') { *c = 0; p[k++] = c + 1; }
+  }
+  if (k < 3) return;
+
+  state = 'S'; // Stop any ongoing music counter
+  renderClock(p[0], p[1], p[2]);
+}
+
 void parseCommand(char *cmd) {
   if (strncmp(cmd, "#SONG:", 6) == 0) {
     handleSong(cmd + 6);
@@ -341,6 +471,9 @@ void parseCommand(char *cmd) {
   }
   else if (strncmp(cmd, "#T:", 3) == 0) {
     handleTimeUpdate(cmd + 3);
+  }
+  else if (strncmp(cmd, "#CLOCK:", 7) == 0) {
+    handleClock(cmd + 7);
   }
 }
 
@@ -357,39 +490,51 @@ void readSerial() {
   }
 }
 
-// ---------- Setup ----------
+// ═══════════════════════════════════════════════════════════════════
+//  SETUP & MAIN LOOP
+// ═══════════════════════════════════════════════════════════════════
+
 void setup() {
   Serial.begin(115200);
+
   tft.begin(tft.readID());
   tft.setRotation(ROTATION);
 
-  // Triple screen clear to flush TFT controller memory
+  // Triple-clear screen
   tft.fillScreen(COL_BG); delay(30);
   tft.fillScreen(COL_BG); delay(30);
   tft.fillScreen(COL_BG);
 
-  // Splash Screen
-  tft.drawBitmap(108, 100, logo24, 24, 24, COL_GREEN, COL_BG);
+  // Spotify Radar Pulse Boot Animation
+  int cx = 120, cy = 130;
+  for (int r = 10; r <= 70; r += 15) {
+    tft.drawCircle(cx, cy, r, COL_BORDER);
+    tft.drawCircle(cx, cy, r - 1, COL_SURFACE);
+    delay(40);
+  }
+  tft.drawBitmap(cx - 12, cy - 12, logo24, 24, 24, COL_GREEN, COL_BG);
+
   tft.setTextSize(3);
   tft.setTextColor(COL_WHITE, COL_BG);
-  tft.setCursor(55, 140);
+  tft.setCursor(55, 185);
   tft.print(F("Spotify"));
 
   tft.setTextSize(1);
   tft.setTextColor(COL_GRAY_LT, COL_BG);
-  tft.setCursor(52, 185);
+  tft.setCursor(52, 225);
   tft.print(F("Connecting to laptop..."));
   delay(500);
 
-  // Draw base shell
+  // Initial Player Shell
   tft.fillScreen(COL_BG);
   drawHeader();
   tft.drawRoundRect(ART_X - 2, ART_Y - 2, ART_SIZE + 4, ART_SIZE + 4, 4, COL_BORDER);
+  tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_SURFACE);
+  tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logo24, 24, 24, COL_GREEN, COL_SURFACE);
   tft.fillRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, 2, COL_TRACK);
   drawStatusBadge('N');
 }
 
-// ---------- Main Loop ----------
 void loop() {
   static unsigned long lastUI = 0;
 
