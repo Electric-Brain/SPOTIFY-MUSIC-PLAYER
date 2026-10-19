@@ -232,14 +232,16 @@ def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
         state_tracker["pending_notif"] = None
         ser.write(f"#NOTIF:{napp}|{nmsg}\n".encode("ascii"))
 
-    # Sync system volume to Arduino clock mode if changed from Windows side
+    # Sync system volume to Arduino clock mode ONLY if changed independently from Windows side
     ep = get_audio_endpoint()
     if ep:
         try:
             cur_vol = round(ep.GetMasterVolumeLevelScalar() * 100)
             if cur_vol != state_tracker.get("last_synced_vol", -1):
                 state_tracker["last_synced_vol"] = cur_vol
-                if cur_vol != _last_applied_vol:
+                # Only sync to Arduino if pot hasn't moved in >1.5s to prevent feedback ping-pong
+                if time.time() - _last_applied_time > 1.5 and abs(cur_vol - _last_applied_vol) > 1:
+                    _last_applied_vol = cur_vol
                     ser.write(f"#VOL:{cur_vol}\n".encode("ascii"))
         except Exception:
             pass
@@ -266,29 +268,33 @@ def get_audio_endpoint():
 
 
 _last_applied_vol = -1
+_last_applied_time = 0.0
 
 def set_system_volume(vol_pct: int):
     """Sets master volume (0-100%) and triggers the live native Windows volume popup (OSD)."""
-    global _last_applied_vol
+    global _last_applied_vol, _last_applied_time
     if vol_pct == _last_applied_vol:
         return
+    prev_vol = _last_applied_vol
     _last_applied_vol = vol_pct
+    _last_applied_time = time.time()
 
     ep = get_audio_endpoint()
     if not ep:
         return
     scalar = max(0.0, min(1.0, vol_pct / 100.0))
     try:
-        # 1. Set exact scalar level directly
+        # 1. First set exact scalar level directly via PyCAW
         ep.SetMasterVolumeLevelScalar(scalar, None)
 
-        # 2. Trigger native Windows Volume Flyout / OSD banner popup
-        if scalar >= 0.98:
-            ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, 2, 0)
-        else:
-            ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, 2, 0)
+        # 2. Trigger native Windows Volume Flyout in the matching direction
+        if prev_vol >= 0:
+            if vol_pct > prev_vol:
+                ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, 0, 0)
+                ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, 2, 0)
+            elif vol_pct < prev_vol:
+                ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, 0, 0)
+                ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, 2, 0)
 
         # 3. Re-assert exact scalar level so keystroke doesn't shift it
         ep.SetMasterVolumeLevelScalar(scalar, None)

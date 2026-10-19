@@ -899,6 +899,8 @@ void checkVolumePot() {
   if (millis() - lastPotCheck < 30) return;
   lastPotCheck = millis();
 
+  // Settle ADC S/H capacitor for high-impedance 47k pot (throwaway read)
+  analogRead(POT_PIN);
   int sample = analogRead(POT_PIN);
   if (filteredAdc < 0) {
     // Cold boot initialization: record starting knob position without jumping volume
