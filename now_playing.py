@@ -47,6 +47,18 @@ PORT = "COM5"       # Arduino Port (e.g. "COM3", "COM5"), or "AUTO" to auto-dete
 BAUD = 115200
 ART_SIZE = 200      # 200x200 Cover Art (Maximized Screen Width)
 
+_single_instance_mutex = None
+
+def acquire_single_instance_lock(name: str = "Global\\SpotifyDeskDisplay_Lock"):
+    """Prevents multiple concurrent instances of now_playing.py from running."""
+    global _single_instance_mutex
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, True, name)
+    ERROR_ALREADY_EXISTS = 183
+    if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        return None
+    _single_instance_mutex = mutex
+    return mutex
+
 
 # ═══════════════════════════════════════════════════════════════════
 #   BATTERY, WIFI, BLUETOOTH & NOTIFICATION COLLECTORS
@@ -350,6 +362,14 @@ def clean(s: str, n: int = 36) -> str:
 
 
 async def get_best_session(mgr):
+    if not mgr:
+        try:
+            mgr = await SessionManager.request_async()
+        except Exception:
+            return None
+    if not mgr:
+        return None
+
     try:
         sessions = mgr.get_sessions()
     except Exception:
@@ -370,7 +390,10 @@ async def get_best_session(mgr):
         except Exception:
             continue
 
-    return spotify or playing or mgr.get_current_session()
+    try:
+        return spotify or playing or mgr.get_current_session()
+    except Exception:
+        return None
 
 
 async def extract_cover_rgb565(props) -> bytes | None:
@@ -676,8 +699,29 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
         reader_task.cancel()
 
 
+async def get_session_manager_safe():
+    """Resilient helper to request SessionManager with retries on cold boot."""
+    for _ in range(6):
+        try:
+            mgr = await SessionManager.request_async()
+            if mgr:
+                return mgr
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+    return None
+
+
 async def main():
-    mgr = await SessionManager.request_async()
+    _mutex = acquire_single_instance_lock()
+    if not _mutex:
+        # Another instance is already running! Exit silently.
+        return
+
+    # Grace period on boot for Windows audio, WinRT, and USB drivers to initialize
+    await asyncio.sleep(2.0)
+
+    mgr = await get_session_manager_safe()
     notif_listener, initial_notif_id = await init_notification_listener()
 
     # Infinite plug-and-play auto-reconnect loop
@@ -690,6 +734,8 @@ async def main():
             ser.reset_output_buffer()
             ser.write(b"\n")
             await asyncio.sleep(0.05)
+            if mgr is None:
+                mgr = await get_session_manager_safe()
             await run_playback_loop(ser, mgr, notif_listener, initial_notif_id)
         except (serial.SerialException, PermissionError, OSError):
             await asyncio.sleep(2)

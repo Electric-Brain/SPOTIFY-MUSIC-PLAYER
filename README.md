@@ -119,11 +119,13 @@ To keep the service running silently in the background without keeping a command
 - **Start Background Service**: Double-click [`start_display.bat`](start_display.bat) or [`start_hidden.vbs`](start_hidden.vbs).
 - **Stop Service**: Double-click [`stop_display.bat`](stop_display.bat).
 
-### Start Automatically on Windows Boot
-1. Press `Win + R`, type `shell:startup`, and press **Enter**.
-2. Right-click [`start_hidden.vbs`](start_hidden.vbs) in this folder and select **Create shortcut**.
-3. Move that shortcut into the **Startup** folder.
-4. The display service will now start automatically in the background whenever you log in to Windows!
+### Start Automatically on Windows Boot (Autostart)
+To have the display service start automatically whenever your PC boots:
+1. Run the one-click autostart setup script:
+   ```bash
+   python setup_autostart.py
+   ```
+2. That's it! It automatically registers both the **Windows Registry Run Key** and the **Startup Folder Shortcut**, with single-instance protection and auto-reconnect.
 
 ---
 
