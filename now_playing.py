@@ -33,7 +33,7 @@ from PIL import Image, ImageEnhance
 from pycaw.pycaw import AudioUtilities
 import serial
 import serial.tools.list_ports
-from winrt.windows.devices.bluetooth import BluetoothDevice, BluetoothConnectionStatus
+from winrt.windows.devices.bluetooth import BluetoothDevice, BluetoothLEDevice, BluetoothConnectionStatus
 from winrt.windows.devices.enumeration import DeviceInformation
 from winrt.windows.media.control import (
     GlobalSystemMediaTransportControlsSessionManager as SessionManager,
@@ -130,16 +130,32 @@ _bt_last_check: float = 0.0
 async def get_bluetooth_device() -> str:
     global _cached_bt, _bt_last_check
     now = time.time()
-    if now - _bt_last_check < 4.0:
+    if now - _bt_last_check < 3.0:
         return _cached_bt
     _bt_last_check = now
     try:
         selector = BluetoothDevice.get_device_selector_from_connection_status(BluetoothConnectionStatus.CONNECTED)
         devices = await DeviceInformation.find_all_async_aqs_filter(selector)
         for d in devices:
-            if d.name:
-                _cached_bt = clean(d.name, 16)
-                return _cached_bt
+            if not d.name:
+                continue
+            # 1. Classic Bluetooth device verification (speakers, headphones, etc.)
+            try:
+                bd = await BluetoothDevice.from_id_async(d.id)
+                if bd and bd.connection_status == BluetoothConnectionStatus.CONNECTED:
+                    _cached_bt = clean(bd.name or d.name, 16)
+                    return _cached_bt
+            except Exception:
+                pass
+
+            # 2. Bluetooth LE device verification (smartwatches, buds, etc.)
+            try:
+                ble = await BluetoothLEDevice.from_id_async(d.id)
+                if ble and ble.connection_status == BluetoothConnectionStatus.CONNECTED:
+                    _cached_bt = clean(ble.name or d.name, 16)
+                    return _cached_bt
+            except Exception:
+                pass
     except Exception:
         pass
     _cached_bt = "None"
