@@ -13,11 +13,14 @@
 import asyncio
 import concurrent.futures
 import ctypes
+from ctypes import wintypes
 from datetime import datetime, timezone
 import io
+import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 
 # Ensure safe stdout/stderr when running as background service via pythonw.exe
@@ -265,6 +268,8 @@ def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
 
 VK_VOLUME_UP   = 0xAF
 VK_VOLUME_DOWN = 0xAE
+KEYEVENTF_EXTENDEDKEY = 0x0001
+KEYEVENTF_KEYUP       = 0x0002
 
 _cached_audio_endpoint = None
 
@@ -282,6 +287,76 @@ def get_audio_endpoint():
 _last_applied_vol = -1
 _last_applied_time = 0.0
 
+_vol_key_queue: queue.Queue = queue.Queue()
+
+
+def _desktop_input_worker():
+    """Dedicated background thread that attaches to the interactive 'Default' desktop
+    and simulates extended multimedia volume keystrokes so Windows Shell renders the native OSD flyout,
+    then asserts the exact scalar volume to eliminate key-step offset."""
+    try:
+        ctypes.windll.ole32.CoInitialize(None)
+    except Exception:
+        pass
+
+    try:
+        hdesk = ctypes.windll.user32.OpenDesktopW("Default", 0, False, 0x01FF)
+        if hdesk:
+            ctypes.windll.user32.SetThreadDesktop(hdesk)
+    except Exception:
+        pass
+
+    thread_ep = None
+    try:
+        sp = AudioUtilities.GetSpeakers()
+        thread_ep = sp.EndpointVolume if sp else None
+    except Exception:
+        pass
+
+    user32 = ctypes.windll.user32
+    while True:
+        try:
+            item = _vol_key_queue.get()
+            if item is None:
+                break
+            # Rapid knob movement: drop intermediate events and keep only the freshest direction & scalar
+            while not _vol_key_queue.empty():
+                try:
+                    item = _vol_key_queue.get_nowait()
+                    _vol_key_queue.task_done()
+                except queue.Empty:
+                    break
+
+            vk, scan, scalar = item
+            # Extended key event triggers Windows Shell volume popup
+            user32.keybd_event(vk, scan, KEYEVENTF_EXTENDEDKEY, 0)
+            time.sleep(0.004)
+            user32.keybd_event(vk, scan, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+            time.sleep(0.015)
+            # Re-assert exact scalar level so Windows flyout locks to the pot value precisely
+            if thread_ep:
+                thread_ep.SetMasterVolumeLevelScalar(scalar, None)
+            _vol_key_queue.task_done()
+        except Exception:
+            pass
+
+
+# Start dedicated desktop input thread immediately as a daemon
+_input_thread = threading.Thread(target=_desktop_input_worker, daemon=True, name="DesktopInputWorker")
+_input_thread.start()
+
+
+def init_volume():
+    """Initializes the cached volume state from Windows Master Volume on boot."""
+    global _last_applied_vol
+    ep = get_audio_endpoint()
+    if ep:
+        try:
+            _last_applied_vol = round(ep.GetMasterVolumeLevelScalar() * 100)
+        except Exception:
+            _last_applied_vol = -1
+
+
 def set_system_volume(vol_pct: int):
     """Sets master volume (0-100%) and triggers the live native Windows volume popup (OSD)."""
     global _last_applied_vol, _last_applied_time
@@ -291,27 +366,27 @@ def set_system_volume(vol_pct: int):
     _last_applied_vol = vol_pct
     _last_applied_time = time.time()
 
-    ep = get_audio_endpoint()
-    if not ep:
-        return
     scalar = max(0.0, min(1.0, vol_pct / 100.0))
-    try:
-        # 1. First set exact scalar level directly via PyCAW
-        ep.SetMasterVolumeLevelScalar(scalar, None)
+    ep = get_audio_endpoint()
+    if ep:
+        try:
+            ep.SetMasterVolumeLevelScalar(scalar, None)
+        except Exception:
+            pass
 
-        # 2. Trigger native Windows Volume Flyout in the matching direction
-        if prev_vol >= 0:
-            if vol_pct > prev_vol:
-                ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, 0, 0)
-                ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, 2, 0)
-            elif vol_pct < prev_vol:
-                ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, 0, 0)
-                ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, 2, 0)
+    # Trigger native Windows Volume Flyout in matching direction
+    if prev_vol < 0:
+        vk = VK_VOLUME_UP if vol_pct >= 50 else VK_VOLUME_DOWN
+        scan = 0x30 if vol_pct >= 50 else 0x2E
+    else:
+        if vol_pct >= prev_vol:
+            vk = VK_VOLUME_UP
+            scan = 0x30
+        else:
+            vk = VK_VOLUME_DOWN
+            scan = 0x2E
 
-        # 3. Re-assert exact scalar level so keystroke doesn't shift it
-        ep.SetMasterVolumeLevelScalar(scalar, None)
-    except Exception:
-        pass
+    _vol_key_queue.put((vk, scan, scalar))
 
 
 async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
@@ -720,6 +795,7 @@ async def main():
 
     # Grace period on boot for Windows audio, WinRT, and USB drivers to initialize
     await asyncio.sleep(2.0)
+    init_volume()
 
     mgr = await get_session_manager_safe()
     notif_listener, initial_notif_id = await init_notification_listener()
