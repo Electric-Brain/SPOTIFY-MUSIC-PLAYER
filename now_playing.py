@@ -30,7 +30,9 @@ if sys.stderr is None:
     sys.stderr = io.StringIO()
 
 from PIL import Image, ImageEnhance
-from pycaw.pycaw import AudioUtilities
+import comtypes
+from pycaw.pycaw import AudioUtilities, IMMDeviceEnumerator, IAudioEndpointVolume
+from pycaw.constants import CLSID_MMDeviceEnumerator, EDataFlow, ERole
 import serial
 import serial.tools.list_ports
 from winrt.windows.devices.bluetooth import BluetoothDevice, BluetoothLEDevice, BluetoothConnectionStatus
@@ -270,8 +272,8 @@ def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
             cur_vol = round(ep.GetMasterVolumeLevelScalar() * 100)
             if cur_vol != state_tracker.get("last_synced_vol", -1):
                 state_tracker["last_synced_vol"] = cur_vol
-                # Only sync to Arduino if pot hasn't moved in >1.5s to prevent feedback ping-pong
-                if time.time() - _last_applied_time > 1.5 and abs(cur_vol - _last_applied_vol) > 1:
+                # Only sync to Arduino if pot hasn't moved in >3.0s and changed by >=3% to avoid feedback jitter
+                if time.time() - _last_applied_time > 3.0 and abs(cur_vol - _last_applied_vol) >= 3:
                     _last_applied_vol = cur_vol
                     ser.write(f"#VOL:{cur_vol}\n".encode("ascii"))
         except Exception:
@@ -287,17 +289,26 @@ VK_VOLUME_DOWN = 0xAE
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP       = 0x0002
 
-_cached_audio_endpoint = None
+_device_enumerator = None
 
 def get_audio_endpoint():
-    global _cached_audio_endpoint
-    if _cached_audio_endpoint is None:
+    """Returns the live active default multimedia audio endpoint (auto-adapts when headphones/BT connect)."""
+    global _device_enumerator
+    try:
+        if _device_enumerator is None:
+            _device_enumerator = comtypes.CoCreateInstance(
+                CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_INPROC_SERVER
+            )
+        device = _device_enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender.value, ERole.eMultimedia.value)
+        endpoint = device.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_INPROC_SERVER, None)
+        return endpoint.QueryInterface(IAudioEndpointVolume)
+    except Exception:
+        _device_enumerator = None
         try:
             sp = AudioUtilities.GetSpeakers()
-            _cached_audio_endpoint = sp.EndpointVolume if sp else None
+            return sp.EndpointVolume if sp else None
         except Exception:
-            _cached_audio_endpoint = None
-    return _cached_audio_endpoint
+            return None
 
 
 _last_applied_vol = -1
@@ -308,8 +319,7 @@ _vol_key_queue: queue.Queue = queue.Queue()
 
 def _desktop_input_worker():
     """Dedicated background thread that attaches to the interactive 'Default' desktop
-    and simulates extended multimedia volume keystrokes so Windows Shell renders the native OSD flyout,
-    then asserts the exact scalar volume to eliminate key-step offset."""
+    and triggers the native Windows volume popup (OSD) and sets the exact active volume."""
     try:
         ctypes.windll.ole32.CoInitialize(None)
     except Exception:
@@ -322,12 +332,31 @@ def _desktop_input_worker():
     except Exception:
         pass
 
-    thread_ep = None
+    worker_enumerator = None
     try:
-        sp = AudioUtilities.GetSpeakers()
-        thread_ep = sp.EndpointVolume if sp else None
+        worker_enumerator = comtypes.CoCreateInstance(
+            CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_INPROC_SERVER
+        )
     except Exception:
-        pass
+        worker_enumerator = None
+
+    def _get_worker_ep():
+        nonlocal worker_enumerator
+        try:
+            if worker_enumerator is None:
+                worker_enumerator = comtypes.CoCreateInstance(
+                    CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_INPROC_SERVER
+                )
+            device = worker_enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender.value, ERole.eMultimedia.value)
+            endpoint = device.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_INPROC_SERVER, None)
+            return endpoint.QueryInterface(IAudioEndpointVolume)
+        except Exception:
+            worker_enumerator = None
+            try:
+                sp = AudioUtilities.GetSpeakers()
+                return sp.EndpointVolume if sp else None
+            except Exception:
+                return None
 
     user32 = ctypes.windll.user32
     while True:
@@ -346,12 +375,13 @@ def _desktop_input_worker():
             vk, scan, scalar = item
             # Extended key event triggers Windows Shell volume popup
             user32.keybd_event(vk, scan, KEYEVENTF_EXTENDEDKEY, 0)
-            time.sleep(0.004)
+            time.sleep(0.002)
             user32.keybd_event(vk, scan, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
-            time.sleep(0.015)
-            # Re-assert exact scalar level so Windows flyout locks to the pot value precisely
-            if thread_ep:
-                thread_ep.SetMasterVolumeLevelScalar(scalar, None)
+            time.sleep(0.010)
+            # Re-assert exact scalar level on the currently active default endpoint (0-100% exact match)
+            ep = _get_worker_ep()
+            if ep:
+                ep.SetMasterVolumeLevelScalar(scalar, None)
             _vol_key_queue.task_done()
         except Exception:
             pass
@@ -376,13 +406,14 @@ def init_volume():
 def set_system_volume(vol_pct: int):
     """Sets master volume (0-100%) and triggers the live native Windows volume popup (OSD)."""
     global _last_applied_vol, _last_applied_time
+    vol_pct = max(0, min(100, vol_pct))
     if vol_pct == _last_applied_vol:
         return
     prev_vol = _last_applied_vol
     _last_applied_vol = vol_pct
     _last_applied_time = time.time()
 
-    scalar = max(0.0, min(1.0, vol_pct / 100.0))
+    scalar = vol_pct / 100.0
     ep = get_audio_endpoint()
     if ep:
         try:
