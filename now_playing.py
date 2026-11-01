@@ -240,6 +240,7 @@ async def telemetry_background_worker(notif_listener, state_tracker: dict):
 
 def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
     """Dispatches the live second clock tick, system telemetry, and notifications in <0.1ms."""
+    global _last_applied_vol, _last_applied_time
     now = datetime.now()
     t_str = f"{now.hour % 12 or 12:2d}:{now.minute:02d}:{now.second:02d}"
     ampm  = now.strftime("%p")
@@ -714,7 +715,7 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
         "last_sys_state": "",
         "last_notif_id": initial_notif_id,
         "pending_notif": None,
-        "clock_mode": False,
+        "clock_mode": True,
         "running": True,
     }
 
@@ -723,12 +724,19 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
         clock_state["battery_pct"] = pct
         clock_state["charging"] = chg
         clock_state["wifi"] = get_wifi_ssid()
+        clock_state["bt"] = await get_bluetooth_device()
     except Exception:
         pass
 
     clock_state["streaming_cover"] = False
     worker_task = asyncio.create_task(telemetry_background_worker(notif_listener, clock_state))
     reader_task = asyncio.create_task(serial_reader_worker(ser, clock_state))
+
+    # Send initial clock & system dashboard immediately upon connection so deck never hangs!
+    try:
+        send_clock_dashboard(ser, clock_state)
+    except Exception:
+        pass
 
     try:
         while ser.is_open:
@@ -756,14 +764,23 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
 
             pos, dur, flag = compute_position(tl, status)
 
-            # ── Pause / Idle detection -> Freeze timer and transition to Clock ──
+            # ── If music is not playing ──
             if status != PlayStatus.PLAYING:
+                # If we were in Clock mode (or just connected), STAY in Clock mode!
+                if clock_state["clock_mode"] or not last_track_id:
+                    clock_state["clock_mode"] = True
+                    send_clock_dashboard(ser, clock_state)
+                    now = datetime.now()
+                    ms_left = (1_000_000 - now.microsecond) / 1_000_000.0
+                    await asyncio.sleep(max(0.05, ms_left))
+                    continue
+
+                # If music was playing on screen and just got paused:
                 if paused_since is None:
                     paused_since = time.time()
-                    # Immediately freeze timer and draw PAUSED badge
                     ser.write(f"#T:{pos}:{dur}:S\n".encode("ascii"))
                 elif time.time() - paused_since >= 8.0:
-                    # 8 seconds of continuous pause: Switch to sleek Standby Clock Dashboard
+                    # 8 seconds of continuous pause: Transition to Clock mode
                     clock_state["clock_mode"] = True
                     send_clock_dashboard(ser, clock_state)
                     now = datetime.now()
@@ -775,10 +792,10 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
                     await asyncio.sleep(0.4)
                     continue
             else:
-                clock_state["clock_mode"] = False
-                if paused_since is not None and paused_since > 0:
-                    # Waking up from pause: force immediate refresh
+                # ── Music IS playing! ──
+                if clock_state.get("clock_mode") or (paused_since is not None and paused_since > 0):
                     last_track_id = ""
+                clock_state["clock_mode"] = False
                 paused_since = None
 
             t  = clean(props.title) if props else ""
@@ -841,6 +858,14 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
         clock_state["running"] = False
         worker_task.cancel()
         reader_task.cancel()
+        try:
+            await asyncio.gather(worker_task, reader_task, return_exceptions=True)
+        except Exception:
+            pass
+        try:
+            ser.close()
+        except Exception:
+            pass
 
 
 async def get_session_manager_safe():
@@ -873,8 +898,9 @@ async def main():
     while True:
         target_port = find_arduino_port()
         if not target_port:
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(1.5)
             continue
+        ser = None
         try:
             ser = serial.Serial(target_port, BAUD, timeout=2)
             time.sleep(2)  # UNO reboot wait
@@ -886,11 +912,17 @@ async def main():
                 mgr = await get_session_manager_safe()
             await run_playback_loop(ser, mgr, notif_listener, initial_notif_id)
         except (serial.SerialException, PermissionError, OSError):
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
         except KeyboardInterrupt:
             break
         except Exception:
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
+        finally:
+            if ser:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":

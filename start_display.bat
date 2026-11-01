@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0"
 echo Starting Spotify Display Service in background...
 start "" pythonw "%~dp0now_playing.py"
 echo Done! Service is running silently in the background.
