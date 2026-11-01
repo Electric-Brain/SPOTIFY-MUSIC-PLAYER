@@ -48,7 +48,7 @@ from winrt.windows.ui.notifications.management import (
 )
 from winrt.windows.ui.notifications import NotificationKinds
 
-PORT = "COM5"       # Arduino Port (e.g. "COM3", "COM5"), or "AUTO" to auto-detect
+PORT = "AUTO"       # Arduino Port (e.g. "COM3", "COM5", "COM7"), or "AUTO" to auto-detect any port
 BAUD = 115200
 ART_SIZE = 200      # 200x200 Cover Art (Maximized Screen Width)
 
@@ -189,7 +189,7 @@ async def check_new_notification(listener, last_id: int) -> tuple[int, str, str]
                 app = "Notification"
                 try:
                     if latest.app_info and latest.app_info.display_info:
-                        app = clean(latest.app_info.display_info.display_name, 12)
+                        app = clean(latest.app_info.display_info.display_name, 14)
                 except Exception:
                     pass
                 msg = ""
@@ -197,13 +197,11 @@ async def check_new_notification(listener, last_id: int) -> tuple[int, str, str]
                     b = latest.notification.visual.get_binding("ToastGeneric")
                     if b:
                         elems = list(b.get_text_elements())
-                        if len(elems) >= 1 and elems[0].text:
-                            msg = elems[0].text
-                        if len(elems) >= 2 and elems[1].text:
-                            msg = f"{msg}: {elems[1].text}" if msg else elems[1].text
+                        parts = [clean(e.text, 80) for e in elems if e.text and e.text.strip()]
+                        msg = " - ".join(parts) if parts else ""
                 except Exception:
                     pass
-                return latest.id, app, clean(msg, 28)
+                return latest.id, app, clean(msg, 130)
     except Exception:
         pass
     return None
@@ -463,19 +461,43 @@ async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
         await asyncio.sleep(0.015)
 
 
-def find_arduino_port() -> str:
-    """Resolve serial port using user config or auto-discovery."""
+def find_arduino_port() -> str | None:
+    """Resolve serial port using user config or auto-discovery across any connected COM port."""
     if PORT and PORT.upper() != "AUTO":
         return PORT
-    for p in serial.tools.list_ports.comports():
+
+    ports = list(serial.tools.list_ports.comports())
+    if not ports:
+        return None
+
+    # Priority 1: Match known Arduino / CH340 / FTDI / CP210x hardware IDs and keywords
+    keywords = [
+        "ch340", "ch341", "ch9102", "arduino", "wch", "cp210", "ftdi",
+        "usb-serial", "usb serial", "silicon labs", "prolific", "1a86:7523", "2341:"
+    ]
+    for p in ports:
         desc = (p.description or "").lower()
         mfg = (p.manufacturer or "").lower()
-        if "arduino" in desc or "arduino" in mfg or "ch340" in desc or "ch340" in mfg or "usb-serial" in desc:
+        hwid = (p.hwid or "").lower()
+        if any(k in desc or k in mfg or k in hwid for k in keywords):
             return p.device
-    ports = list(serial.tools.list_ports.comports())
-    if ports:
-        return ports[0].device
-    return "COM5"
+
+    # Priority 2: Filter out virtual Bluetooth COM ports, accept any physical USB serial port
+    for p in ports:
+        desc = (p.description or "").lower()
+        hwid = (p.hwid or "").lower()
+        if "bluetooth" in desc or "bluetooth" in hwid:
+            continue
+        if "usb" in hwid or "usb" in desc:
+            return p.device
+
+    # Priority 3: Fallback to first non-bluetooth port
+    for p in ports:
+        desc = (p.description or "").lower()
+        if "bluetooth" not in desc:
+            return p.device
+
+    return ports[0].device if ports else None
 
 
 def clean(s: str, n: int = 36) -> str:
@@ -850,6 +872,9 @@ async def main():
     # Infinite plug-and-play auto-reconnect loop
     while True:
         target_port = find_arduino_port()
+        if not target_port:
+            await asyncio.sleep(2.0)
+            continue
         try:
             ser = serial.Serial(target_port, BAUD, timeout=2)
             time.sleep(2)  # UNO reboot wait

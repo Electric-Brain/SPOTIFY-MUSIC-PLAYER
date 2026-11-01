@@ -102,7 +102,7 @@ char lastR[8]  = "";
 #define CLK_DIV3_Y       212
 
 #define NOTIF_CARD_Y     220
-#define NOTIF_CARD_H     74
+#define NOTIF_CARD_H     92
 
 char lastClockDigits[9] = "";
 char lastClockAmpm[6]   = "";
@@ -451,33 +451,70 @@ void drawNotificationCard(const char *app, const char *msg) {
   tft.fillRoundRect(8, NOTIF_CARD_Y, 224, NOTIF_CARD_H, 6, COL_CARD);
   tft.drawRoundRect(8, NOTIF_CARD_Y, 224, NOTIF_CARD_H, 6, COL_GREEN);
 
+  // Subtle header divider inside card
+  tft.drawFastHLine(14, NOTIF_CARD_Y + 25, 212, COL_BORDER);
+
   // Bell icon in yellow
   uint16_t bellCol = 0xFFE0;
-  tft.fillRoundRect(18, NOTIF_CARD_Y + 11, 8, 8, 2, bellCol);
-  tft.drawFastHLine(16, NOTIF_CARD_Y + 19, 12, bellCol);
-  tft.drawPixel(21, NOTIF_CARD_Y + 9, bellCol);
-  tft.drawPixel(21, NOTIF_CARD_Y + 21, bellCol);
+  tft.fillRoundRect(18, NOTIF_CARD_Y + 9, 8, 8, 2, bellCol);
+  tft.drawFastHLine(16, NOTIF_CARD_Y + 17, 12, bellCol);
+  tft.drawPixel(21, NOTIF_CARD_Y + 7, bellCol);
+  tft.drawPixel(21, NOTIF_CARD_Y + 19, bellCol);
 
   // App Title (TextSize 2, bold white)
   tft.setTextSize(2);
   tft.setTextColor(COL_WHITE, COL_CARD);
-  tft.setCursor(34, NOTIF_CARD_Y + 8);
-  char appBuf[13];
-  strncpy(appBuf, app, 12);
-  appBuf[12] = 0;
+  tft.setCursor(34, NOTIF_CARD_Y + 7);
+  char appBuf[15];
+  strncpy(appBuf, app, 14);
+  appBuf[14] = 0;
   tft.print(appBuf);
 
-  // Notification message preview (TextSize 1, light gray)
+  // Notification message with clean word-wrapping across up to 5 lines
   tft.setTextSize(1);
-  tft.setTextColor(COL_GRAY_LT, COL_CARD);
-  tft.setCursor(16, NOTIF_CARD_Y + 34);
-  char msgBuf[35];
-  strncpy(msgBuf, msg, 34);
-  msgBuf[34] = 0;
-  tft.print(msgBuf);
+  tft.setTextColor(COL_WHITE, COL_CARD);
+
+  int lineX = 16;
+  int lineY = NOTIF_CARD_Y + 30;
+  int maxCharsPerLine = 34;
+  int lineCount = 0;
+  int maxLines = 5;
+
+  const char *p = msg;
+  while (*p && lineCount < maxLines) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+
+    const char *lineStart = p;
+    const char *lastBreak = NULL;
+    int len = 0;
+
+    while (*p && len < maxCharsPerLine) {
+      if (*p == ' ') lastBreak = p;
+      len++;
+      p++;
+    }
+
+    int printLen = len;
+    if (*p && len >= maxCharsPerLine) {
+      if (lastBreak && lastBreak > lineStart) {
+        printLen = lastBreak - lineStart;
+        p = lastBreak + 1;
+      } else {
+        printLen = maxCharsPerLine;
+      }
+    }
+
+    tft.setCursor(lineX, lineY);
+    for (int i = 0; i < printLen; i++) {
+      tft.write(lineStart[i]);
+    }
+    lineY += 11;
+    lineCount++;
+  }
 
   notifActive = true;
-  notifExpireAt = millis() + 12000;
+  notifExpireAt = millis() + 14000;
 }
 
 void clearNotificationCard() {
@@ -965,34 +1002,66 @@ void setup() {
   tft.fillScreen(COL_BG); delay(30);
   tft.fillScreen(COL_BG);
 
-  // Spotify Radar Pulse Boot Animation
-  int cx = 120, cy = 130;
-  for (int r = 10; r <= 70; r += 15) {
-    tft.drawCircle(cx, cy, r, COL_BORDER);
-    tft.drawCircle(cx, cy, r - 1, COL_SURFACE);
-    delay(40);
+  // ── Unique SMART DECK Boot Animation ──
+  // 1. Futuristic expanding tech frame
+  for (int step = 0; step < 7; step++) {
+    int inset = 36 - step * 5;
+    tft.drawRoundRect(inset, inset + 45, 240 - 2 * inset, 175, 6, COL_TRACK);
+    delay(20);
   }
-  tft.drawBitmap(cx - 12, cy - 12, logo24, 24, 24, COL_GREEN, COL_BG);
+  tft.drawRoundRect(6, 51, 228, 175, 6, COL_GREEN);
 
+  // 2. Tech corner accents (Cyan)
+  tft.fillRect(6, 51, 10, 3, 0x07FF);
+  tft.fillRect(6, 51, 3, 10, 0x07FF);
+  tft.fillRect(224, 51, 10, 3, 0x07FF);
+  tft.fillRect(231, 51, 3, 10, 0x07FF);
+  tft.fillRect(6, 223, 10, 3, 0x07FF);
+  tft.fillRect(6, 216, 3, 10, 0x07FF);
+  tft.fillRect(224, 223, 10, 3, 0x07FF);
+  tft.fillRect(231, 216, 3, 10, 0x07FF);
+
+  // 3. Brand Text: "SMART DECK"
   tft.setTextSize(3);
+  tft.setTextColor(COL_GREEN, COL_BG);
+  tft.setCursor(24, 90);
+  tft.print(F("SMART "));
   tft.setTextColor(COL_WHITE, COL_BG);
-  tft.setCursor(55, 185);
-  tft.print(F("Spotify"));
+  tft.print(F("DECK"));
+
+  // 4. Subtitle
+  tft.setTextSize(1);
+  tft.setTextColor(0x07FF, COL_BG);
+  tft.setCursor(66, 130);
+  tft.print(F("DESK COMPANION"));
+
+  // 5. Animated Loading Bar
+  tft.drawRoundRect(30, 160, 180, 8, 3, COL_TRACK);
+  for (int w = 0; w <= 176; w += 16) {
+    tft.fillRoundRect(32, 162, w, 4, 2, COL_GREEN);
+    delay(25);
+  }
 
   tft.setTextSize(1);
   tft.setTextColor(COL_GRAY_LT, COL_BG);
-  tft.setCursor(52, 225);
-  tft.print(F("Connecting to laptop..."));
-  delay(500);
+  tft.setCursor(78, 185);
+  tft.print(F("INITIALIZING..."));
+  delay(350);
 
-  // Initial Player Shell
-  tft.fillScreen(COL_BG);
-  drawHeader();
-  tft.drawRoundRect(ART_X - 2, ART_Y - 2, ART_SIZE + 4, ART_SIZE + 4, 4, COL_BORDER);
-  tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_SURFACE);
-  tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logo24, 24, 24, COL_GREEN, COL_SURFACE);
-  tft.fillRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, 2, COL_TRACK);
-  drawStatusBadge('N');
+  // Read volume pot starting position
+  checkVolumePot();
+  delay(10);
+  checkVolumePot();
+
+  // ── Directly Show Clock & System Dashboard ──
+  setupClockLayout();
+  renderClock("--:--:--", "--", "Connecting to PC...");
+  drawBatteryWidget(16, SYS_BATT_Y, 100, false);
+  drawWifiWidget(16, SYS_WIFI_Y, "Connecting...");
+  drawBtWidget(16, SYS_BT_Y, "None");
+  if (lastSentVol >= 0) {
+    drawVolumeWidget(lastSentVol);
+  }
 
   // Flush any stale/corrupted bytes that arrived during bootloader & splash delays
   while (Serial.available()) Serial.read();
