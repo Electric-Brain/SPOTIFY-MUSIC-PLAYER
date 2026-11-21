@@ -60,6 +60,7 @@ const unsigned char PROGMEM logo24[] = {
 // ---------- Display Modes ----------
 enum DisplayMode {
   MODE_BOOT,
+  MODE_WAIT_PC,
   MODE_MUSIC,
   MODE_CLOCK
 };
@@ -921,6 +922,16 @@ void parseCommand(char *cmd) {
   else if (strncmp(cmd, "#VOL:", 5) == 0) {
     handleVol(cmd + 5);
   }
+  else if (strcmp(cmd, "#LOCK") == 0) {
+    if (currentMode != MODE_WAIT_PC) {
+      setupWaitPcLayout();
+    }
+  }
+  else if (strcmp(cmd, "#UNLOCK") == 0) {
+    if (currentMode == MODE_WAIT_PC) {
+      setupClockLayout();
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -991,81 +1002,133 @@ void readSerial() {
 //  SETUP & MAIN LOOP
 // ═══════════════════════════════════════════════════════════════════
 
+void setupWaitPcLayout() {
+  tft.fillScreen(COL_BG);
+  currentMode = MODE_WAIT_PC;
+  clockSynced = false;
+  notifActive = false;
+
+  // Header separator
+  tft.drawFastHLine(15, 26, 210, COL_BORDER);
+
+  // Modern Spotify Green Lock Icon
+  // Arch (Shackle)
+  tft.drawRoundRect(96, 52, 48, 44, 16, COL_GREEN);
+  tft.drawRoundRect(97, 53, 46, 42, 15, COL_GREEN);
+  tft.fillRect(98, 76, 44, 20, COL_BG);
+
+  // Body
+  tft.fillRoundRect(80, 80, 80, 60, 8, COL_CARD);
+  tft.drawRoundRect(80, 80, 80, 60, 8, COL_GREEN);
+
+  // Keyhole
+  tft.fillCircle(120, 102, 6, COL_GREEN);
+  tft.fillTriangle(117, 104, 123, 104, 120, 120, COL_GREEN);
+
+  // Main Status Text
+  tft.setTextSize(3);
+  tft.setTextColor(COL_WHITE, COL_BG);
+  tft.setCursor(42, 160);
+  tft.print(F("PC LOCKED"));
+
+  // Secondary text
+  tft.setTextSize(1);
+  tft.setTextColor(COL_GRAY_LT, COL_BG);
+  tft.setCursor(44, 196);
+  tft.print(F("WAITING FOR PC TO UNLOCK"));
+
+  // Info label
+  tft.setTextColor(0x07FF, COL_BG);
+  tft.setCursor(48, 218);
+  tft.print(F("AUTO-RESUMES ON LOGIN"));
+
+  // Bottom pulsing track rail
+  tft.drawRoundRect(30, 252, 180, 6, 3, COL_TRACK);
+}
+
+void updateWaitPcAnimation() {
+  static unsigned long lastPulse = 0;
+  static int pulseX = 35;
+  static int pulseDir = 3;
+
+  if (millis() - lastPulse < 30) return;
+  lastPulse = millis();
+
+  // Clear previous dot
+  tft.fillRect(pulseX - 8, 253, 24, 4, COL_BG);
+  tft.drawFastHLine(max(32, pulseX - 8), 254, min(176, 24), COL_TRACK);
+
+  pulseX += pulseDir;
+  if (pulseX >= 195) { pulseX = 195; pulseDir = -3; }
+  else if (pulseX <= 45) { pulseX = 45; pulseDir = 3; }
+
+  // Draw sleek glowing dot
+  tft.fillRoundRect(pulseX - 6, 253, 12, 4, 2, COL_GREEN);
+}
+
+void playBootAnimation() {
+  tft.fillScreen(COL_BG);
+
+  // 1. Sleek Spotify Vector Logo centered at (108, 55)
+  tft.drawBitmap(108, 55, logo24, 24, 24, COL_GREEN, COL_BG);
+
+  // 2. High-Tech Brand Text
+  tft.setTextSize(3);
+  tft.setTextColor(COL_WHITE, COL_BG);
+  tft.setCursor(56, 95);
+  tft.print(F("SPOTIFY"));
+
+  tft.setTextSize(2);
+  tft.setTextColor(COL_GREEN, COL_BG);
+  tft.setCursor(96, 126);
+  tft.print(F("DECK"));
+
+  // 3. Subtitle / Version
+  tft.setTextSize(1);
+  tft.setTextColor(0x07FF, COL_BG);
+  tft.setCursor(76, 154);
+  tft.print(F("HARDWARE EDITION"));
+
+  // 4. Smooth Laser Progress Scan
+  tft.drawRoundRect(35, 180, 170, 6, 3, COL_TRACK);
+  for (int w = 4; w <= 164; w += 10) {
+    tft.fillRoundRect(38, 181, w, 4, 2, COL_GREEN);
+    delay(20);
+  }
+
+  tft.setTextSize(1);
+  tft.setTextColor(COL_GRAY_LT, COL_BG);
+  tft.setCursor(85, 202);
+  tft.print(F("SYSTEM READY"));
+  delay(350);
+}
+
 void setup() {
   Serial.begin(115200);
 
   tft.begin(tft.readID());
   tft.setRotation(ROTATION);
 
-  // Triple-clear screen
-  tft.fillScreen(COL_BG); delay(30);
-  tft.fillScreen(COL_BG); delay(30);
+  // Clear screen
+  tft.fillScreen(COL_BG); delay(20);
   tft.fillScreen(COL_BG);
 
-  // ── Unique SMART DECK Boot Animation ──
-  // 1. Futuristic expanding tech frame
-  for (int step = 0; step < 7; step++) {
-    int inset = 36 - step * 5;
-    tft.drawRoundRect(inset, inset + 45, 240 - 2 * inset, 175, 6, COL_TRACK);
-    delay(20);
-  }
-  tft.drawRoundRect(6, 51, 228, 175, 6, COL_GREEN);
-
-  // 2. Tech corner accents (Cyan)
-  tft.fillRect(6, 51, 10, 3, 0x07FF);
-  tft.fillRect(6, 51, 3, 10, 0x07FF);
-  tft.fillRect(224, 51, 10, 3, 0x07FF);
-  tft.fillRect(231, 51, 3, 10, 0x07FF);
-  tft.fillRect(6, 223, 10, 3, 0x07FF);
-  tft.fillRect(6, 216, 3, 10, 0x07FF);
-  tft.fillRect(224, 223, 10, 3, 0x07FF);
-  tft.fillRect(231, 216, 3, 10, 0x07FF);
-
-  // 3. Brand Text: "SMART DECK"
-  tft.setTextSize(3);
-  tft.setTextColor(COL_GREEN, COL_BG);
-  tft.setCursor(24, 90);
-  tft.print(F("SMART "));
-  tft.setTextColor(COL_WHITE, COL_BG);
-  tft.print(F("DECK"));
-
-  // 4. Subtitle
-  tft.setTextSize(1);
-  tft.setTextColor(0x07FF, COL_BG);
-  tft.setCursor(66, 130);
-  tft.print(F("DESK COMPANION"));
-
-  // 5. Animated Loading Bar
-  tft.drawRoundRect(30, 160, 180, 8, 3, COL_TRACK);
-  for (int w = 0; w <= 176; w += 16) {
-    tft.fillRoundRect(32, 162, w, 4, 2, COL_GREEN);
-    delay(25);
-  }
-
-  tft.setTextSize(1);
-  tft.setTextColor(COL_GRAY_LT, COL_BG);
-  tft.setCursor(78, 185);
-  tft.print(F("INITIALIZING..."));
-  delay(350);
+  playBootAnimation();
 
   // Read volume pot starting position
   checkVolumePot();
-  delay(10);
-  checkVolumePot();
 
-  // ── Directly Show Clock & System Dashboard ──
+  // Start in Clock mode with placeholder "Connecting..." text
+  // MODE_WAIT_PC is ONLY entered via explicit #LOCK command from Python
   setupClockLayout();
-  renderClock("--:--:--", "--", "Connecting to PC...");
-  drawBatteryWidget(16, SYS_BATT_Y, 100, false);
-  drawWifiWidget(16, SYS_WIFI_Y, "Connecting...");
-  drawBtWidget(16, SYS_BT_Y, "None");
-  if (lastSentVol >= 0) {
-    drawVolumeWidget(lastSentVol);
-  }
+  renderClock("--:--:--", "--", "Connecting...");
 
   // Flush any stale/corrupted bytes that arrived during bootloader & splash delays
   while (Serial.available()) Serial.read();
   lineIdx = 0;
+
+  // Send ready handshake so Python knows Arduino is alive
+  Serial.println(F("#READY"));
 }
 
 void loop() {
@@ -1073,6 +1136,11 @@ void loop() {
 
   readSerial();
   checkVolumePot();
+
+  if (currentMode == MODE_WAIT_PC) {
+    updateWaitPcAnimation();
+    return;
+  }
 
   if (currentMode == MODE_CLOCK) {
     if (notifActive && millis() > notifExpireAt) {

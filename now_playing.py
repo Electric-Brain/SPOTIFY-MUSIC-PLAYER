@@ -16,6 +16,7 @@ import ctypes
 from ctypes import wintypes
 from datetime import datetime, timezone
 import io
+import os
 import queue
 import re
 import subprocess
@@ -24,10 +25,27 @@ import threading
 import time
 
 # Ensure safe stdout/stderr when running as background service via pythonw.exe
-if sys.stdout is None:
-    sys.stdout = io.StringIO()
-if sys.stderr is None:
-    sys.stderr = io.StringIO()
+log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_run.log")
+_log_fp = None
+try:
+    _log_fp = open(log_file_path, "a", encoding="utf-8")
+    sys.stdout = _log_fp
+    sys.stderr = _log_fp
+except Exception:
+    if sys.stdout is None:
+        sys.stdout = io.StringIO()
+    if sys.stderr is None:
+        sys.stderr = io.StringIO()
+
+def log(msg: str):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    formatted = f"[{timestamp}] {msg}"
+    if _log_fp:
+        try:
+            _log_fp.write(formatted + "\n")
+            _log_fp.flush()
+        except Exception:
+            pass
 
 from PIL import Image, ImageEnhance
 import comtypes
@@ -462,14 +480,27 @@ async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
         await asyncio.sleep(0.015)
 
 
+def is_workstation_locked() -> bool:
+    """Detects if Windows is currently locked or at the password login screen."""
+    try:
+        desk = ctypes.windll.user32.OpenInputDesktop(0, False, 0x01FF)
+        if desk == 0:
+            return True
+        ctypes.windll.user32.CloseDesktop(desk)
+        return False
+    except Exception:
+        return False
+
+
 def find_arduino_port() -> str | None:
     """Resolve serial port using user config or auto-discovery across any connected COM port."""
-    if PORT and PORT.upper() != "AUTO":
-        return PORT
-
     ports = list(serial.tools.list_ports.comports())
     if not ports:
         return None
+
+    port_names = [p.device.upper() for p in ports]
+    if PORT and PORT.upper() != "AUTO" and PORT.upper() in port_names:
+        return PORT
 
     # Priority 1: Match known Arduino / CH340 / FTDI / CP210x hardware IDs and keywords
     keywords = [
@@ -487,7 +518,7 @@ def find_arduino_port() -> str | None:
     for p in ports:
         desc = (p.description or "").lower()
         hwid = (p.hwid or "").lower()
-        if "bluetooth" in desc or "bluetooth" in hwid:
+        if "bluetooth" in desc or "bluetooth" in hwid or "bth" in hwid:
             continue
         if "usb" in hwid or "usb" in desc:
             return p.device
@@ -495,10 +526,11 @@ def find_arduino_port() -> str | None:
     # Priority 3: Fallback to first non-bluetooth port
     for p in ports:
         desc = (p.description or "").lower()
-        if "bluetooth" not in desc:
+        hwid = (p.hwid or "").lower()
+        if "bluetooth" not in desc and "bth" not in hwid and "bluetooth" not in hwid:
             return p.device
 
-    return ports[0].device if ports else None
+    return None
 
 
 def clean(s: str, n: int = 36) -> str:
@@ -735,11 +767,38 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
     # Send initial clock & system dashboard immediately upon connection so deck never hangs!
     try:
         send_clock_dashboard(ser, clock_state)
+        log("Initial clock & telemetry sent to display")
     except Exception:
         pass
 
+    was_locked = True  # Start True so first "unlocked" check sends #UNLOCK + dashboard
+
     try:
         while ser.is_open:
+            # ── Check if Windows is Locked / Login Screen ──
+            if is_workstation_locked():
+                if not was_locked:
+                    try:
+                        ser.write(b"#LOCK\n")
+                        log("Workstation locked -> sent #LOCK to display")
+                    except Exception:
+                        pass
+                    was_locked = True
+                await asyncio.sleep(0.5)
+                continue
+
+            # If user just unlocked workstation:
+            if was_locked:
+                was_locked = False
+                try:
+                    ser.write(b"#UNLOCK\n")
+                    log("Workstation unlocked -> sent #UNLOCK to display")
+                except Exception:
+                    pass
+                clock_state["clock_mode"] = True
+                clock_state["last_sys_sent"] = 0.0  # Force instant dashboard refresh
+                send_clock_dashboard(ser, clock_state)
+
             ses = await get_best_session(mgr)
 
             # ── Standby / No Media Session -> Clock Mode ──
@@ -887,6 +946,7 @@ async def main():
         # Another instance is already running! Exit silently.
         return
 
+    log(f"Service started (PID {os.getpid()})")
     # Grace period on boot for Windows audio, WinRT, and USB drivers to initialize
     await asyncio.sleep(2.0)
     init_volume()
@@ -902,20 +962,41 @@ async def main():
             continue
         ser = None
         try:
-            ser = serial.Serial(target_port, BAUD, timeout=2)
-            time.sleep(2)  # UNO reboot wait
+            log(f"Arduino detected on {target_port}. Opening serial...")
+            ser = serial.Serial()
+            ser.port = target_port
+            ser.baudrate = BAUD
+            ser.timeout = 2
+            ser.dtr = False  # Avoid asserting DTR (prevents Arduino Uno hardware reset!)
+            ser.rts = False
+            ser.open()
+            # Wait for Arduino to finish boot animation + setup (~1.5s)
+            await asyncio.sleep(1.5)
             ser.reset_input_buffer()
             ser.reset_output_buffer()
-            ser.write(b"\n")
-            await asyncio.sleep(0.05)
+            # Wait for #READY handshake from Arduino
+            ready_deadline = time.time() + 3.0
+            got_ready = False
+            while time.time() < ready_deadline:
+                if ser.in_waiting > 0:
+                    raw = ser.read(ser.in_waiting).decode("ascii", errors="ignore")
+                    if "#READY" in raw:
+                        got_ready = True
+                        break
+                await asyncio.sleep(0.05)
+            ser.reset_input_buffer()
+            log(f"Serial connected to {target_port} (ready_handshake={got_ready})")
             if mgr is None:
                 mgr = await get_session_manager_safe()
             await run_playback_loop(ser, mgr, notif_listener, initial_notif_id)
-        except (serial.SerialException, PermissionError, OSError):
+        except (serial.SerialException, PermissionError, OSError) as e:
+            log(f"Serial error on {target_port}: {e}. Retrying in 1.5s...")
             await asyncio.sleep(1.5)
         except KeyboardInterrupt:
+            log("Service stopping via KeyboardInterrupt")
             break
-        except Exception:
+        except Exception as e:
+            log(f"Unexpected error in main loop: {e}")
             await asyncio.sleep(1.5)
         finally:
             if ser:
@@ -926,4 +1007,9 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        log(f"CRITICAL CRASH: {e}\n{tb}")
