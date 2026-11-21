@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 
 # Ensure safe stdout/stderr when running as background service via pythonw.exe
 log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_run.log")
@@ -195,6 +196,93 @@ async def init_notification_listener():
     return None, 0
 
 
+EMOJI_DICT = {
+    # Faces & Reactions
+    '😊': ':)', '🙂': ':)', '😀': ':)', '😃': ':)', '😄': ':)', '😺': ':)', '😸': ':)',
+    '😉': ';)', '😏': ';)',
+    '😂': ':D', '🤣': ':D', '😆': ':D',
+    '😍': '<3', '🥰': '<3', '😘': '<3', '😚': '<3',
+    '😋': ':P', '😜': ':P', '😝': ':P', '😛': ':P',
+    '😎': 'B)',
+    '😢': ':(', '😭': ':(', '😿': ':(', '🥺': ':(', '😞': ':(', '😔': ':(', '😟': ':(', '🙁': ':(', '☹️': ':(', '☹': ':(',
+    '😠': '>:(', '😡': '>:(', '🤬': '>:(', '👿': '>:(', '😈': '>:(',
+    '😱': '[shock]', '😨': '[shock]', '😰': '[shock]', '😳': '[flushed]',
+    '🤔': '[thinking]', '🧐': '[thinking]',
+    '🤫': '[shh]', '🤐': '[quiet]',
+    '😴': '[zzz]', '😪': '[zzz]', '💤': '[zzz]',
+    '💀': '[skull]', '☠️': '[skull]', '☠': '[skull]',
+    '👻': '[ghost]', '🤡': '[clown]',
+    
+    # Hearts
+    '❤️': '<3', '❤': '<3', '🧡': '<3', '💛': '<3', '💚': '<3', '💙': '<3',
+    '💜': '<3', '🖤': '<3', '🤍': '<3', '🤎': '<3', '💔': '<3', '❣️': '<3',
+    '💕': '<3', '💞': '<3', '💓': '<3', '💗': '<3', '💖': '<3', '💘': '<3', '💝': '<3',
+    
+    # Hand gestures
+    '👍': '(y)', '👎': '(n)', '👌': '[ok]', '✌️': '[peace]', '✌': '[peace]',
+    '🤞': '[crossed]', '🤙': '[call]', '👏': '[clap]', '🙌': '[yay]',
+    '🙏': '[pray]', '🤝': '[handshake]', '💪': '[strong]', '👊': '[fist]',
+    '👋': '[wave]', '🖐️': '[hand]', '🖐': '[hand]', '✋': '[stop]',
+    
+    # Symbols & objects
+    '🔥': '[fire]', '💯': '[100]', '🎉': '[party]', '🎊': '[party]', '🥳': '[party]',
+    '✨': '*', '⭐': '*', '🌟': '*', '💫': '*',
+    '🎂': '[cake]', '🍰': '[cake]', '☕': '[coffee]', '🍺': '[beer]', '🍻': '[cheers]',
+    '🍷': '[wine]', '🍾': '[cheers]', '🍕': '[food]', '🍔': '[food]', '🍟': '[food]',
+    '🍲': '[food]', '🍜': '[food]', '🥗': '[food]',
+    '📞': '[call]', '☎️': '[call]', '☎': '[call]', '📲': '[phone]', '📱': '[phone]',
+    '💬': '[msg]', '🗨️': '[msg]', '🗨': '[msg]', '📸': '[photo]', '📷': '[photo]',
+    '🎥': '[video]', '📹': '[video]', '🎵': '♫', '🎶': '♫', '📍': '[loc]', '📌': '[pin]',
+    '⏰': '[time]', '⏱️': '[time]', '⏳': '[time]', '⌛': '[time]',
+    '⚠️': '[!]', '✅': '[ok]', '✔️': '[ok]', '❌': '[x]', '✖️': '[x]', '✖': '[x]',
+    '❓': '?', '❔': '?', '❗': '!', '❕': '!', '💰': '[money]', '💵': '[money]',
+    '🚗': '[car]', '🚕': '[car]', '🏎️': '[car]', '🏍️': '[bike]', '🛵': '[bike]',
+    '🚲': '[cycle]', '✈️': '[flight]', '✈': '[flight]', '🏠': '[home]', '🏡': '[home]',
+    '👀': '[eyes]', '📄': '[doc]', '📝': '[note]', '💡': '[idea]'
+}
+
+SKIN_TONES = ['\U0001F3FB', '\U0001F3FC', '\U0001F3FD', '\U0001F3FE', '\U0001F3FF']
+
+def format_notification_text(text: str, max_len: int = 240) -> str:
+    if not text:
+        return ''
+    for tone in SKIN_TONES:
+        text = text.replace(tone, '')
+    for emo, rep in EMOJI_DICT.items():
+        text = text.replace(emo, rep)
+    text = text.replace('\ufe0f', '').replace('\u200d', '')
+    
+    res = []
+    for ch in text:
+        code = ord(ch)
+        if (0x1F000 <= code <= 0x1FFFF) or (0x2600 <= code <= 0x27BF):
+            try:
+                name = unicodedata.name(ch, '')
+                words = name.split()
+                short = words[-1].lower() if words else 'emoji'
+                res.append(f'[{short}]')
+            except Exception:
+                pass
+        else:
+            res.append(ch)
+    cleaned = ''.join(res)
+    
+    replacements = {
+        '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"',
+        '\u2013': '-', '\u2014': '-', '\u2026': '...', '\u2022': '*',
+        '\u00b7': '*', '\u20b9': 'Rs ', '|': '/'
+    }
+    for k, v in replacements.items():
+        cleaned = cleaned.replace(k, v)
+        
+    cleaned = cleaned.replace('\r', ' ').replace('\n', ' ')
+    cleaned = re.sub(r' {2,}', ' ', cleaned).strip()
+    return cleaned.encode('ascii', 'ignore').decode()[:max_len]
+
+def clean(s: str, n: int = 36) -> str:
+    return format_notification_text(s, max_len=n)
+
+
 async def check_new_notification(listener, last_id: int) -> tuple[int, str, str] | None:
     if not listener:
         return None
@@ -204,22 +292,38 @@ async def check_new_notification(listener, last_id: int) -> tuple[int, str, str]
         if cnt > 0:
             latest = notifs[cnt - 1]
             if latest.id > last_id:
-                app = "Notification"
+                app_name = "Notification"
                 try:
-                    if latest.app_info and latest.app_info.display_info:
-                        app = clean(latest.app_info.display_info.display_name, 14)
+                    if latest.app_info and latest.app_info.display_info and latest.app_info.display_info.display_name:
+                        app_name = latest.app_info.display_info.display_name.strip()
                 except Exception:
                     pass
+
+                header = app_name
                 msg = ""
                 try:
                     b = latest.notification.visual.get_binding("ToastGeneric")
                     if b:
                         elems = list(b.get_text_elements())
-                        parts = [clean(e.text, 80) for e in elems if e.text and e.text.strip()]
-                        msg = " - ".join(parts) if parts else ""
+                        raw_texts = [e.text.strip() for e in elems if e.text and e.text.strip()]
+                        if len(raw_texts) == 1:
+                            msg = raw_texts[0]
+                        elif len(raw_texts) >= 2:
+                            sender = raw_texts[0]
+                            msg = " - ".join(raw_texts[1:])
+                            if "phone" in app_name.lower() or "link" in app_name.lower():
+                                # For Phone Link: put contact/sender name directly in header!
+                                header = sender if sender else app_name
+                            else:
+                                if sender and sender.lower() != app_name.lower():
+                                    header = sender if len(sender) <= 15 else app_name
                 except Exception:
                     pass
-                return latest.id, app, clean(msg, 130)
+
+                clean_header = clean(header, 15)
+                clean_msg = format_notification_text(msg, 240)
+                if clean_msg:
+                    return latest.id, clean_header, clean_msg
     except Exception:
         pass
     return None
@@ -281,6 +385,7 @@ def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
         napp, nmsg = state_tracker["pending_notif"]
         state_tracker["pending_notif"] = None
         ser.write(f"#NOTIF:{napp}|{nmsg}\n".encode("ascii"))
+        log(f"Notification sent to display: [{napp}] {nmsg}")
 
     # Sync system volume to Arduino clock mode ONLY if changed independently from Windows side
     ep = get_audio_endpoint()
@@ -531,11 +636,6 @@ def find_arduino_port() -> str | None:
             return p.device
 
     return None
-
-
-def clean(s: str, n: int = 36) -> str:
-    s = (s or "").replace("|", "/").replace("\r", " ").replace("\n", " ").strip()
-    return s.encode("ascii", "replace").decode()[:n]
 
 
 async def get_best_session(mgr):

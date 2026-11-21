@@ -76,9 +76,9 @@ char state = 'N';          // 'P' = playing, 'S' = paused, 'N' = standby
 char prevState = ' ';
 bool hasCover = false;
 
-// Serial Line Buffer
-char lineBuf[180];
-byte lineIdx = 0;
+// Serial Line Buffer (expanded to 280 to receive full phone messages without dropping)
+char lineBuf[280];
+int  lineIdx = 0;
 
 // Differential Trackers
 int  lastFw    = -1;
@@ -102,8 +102,8 @@ char lastR[8]  = "";
 #define SYS_VOL_BAR_Y    194
 #define CLK_DIV3_Y       212
 
-#define NOTIF_CARD_Y     220
-#define NOTIF_CARD_H     92
+#define NOTIF_CARD_Y     166
+#define NOTIF_CARD_H     146
 
 char lastClockDigits[9] = "";
 char lastClockAmpm[6]   = "";
@@ -462,24 +462,24 @@ void drawNotificationCard(const char *app, const char *msg) {
   tft.drawPixel(21, NOTIF_CARD_Y + 7, bellCol);
   tft.drawPixel(21, NOTIF_CARD_Y + 19, bellCol);
 
-  // App Title (TextSize 2, bold white)
+  // App / Sender Title (TextSize 2, bold white)
   tft.setTextSize(2);
   tft.setTextColor(COL_WHITE, COL_CARD);
   tft.setCursor(34, NOTIF_CARD_Y + 7);
-  char appBuf[15];
-  strncpy(appBuf, app, 14);
-  appBuf[14] = 0;
+  char appBuf[16];
+  strncpy(appBuf, app, 15);
+  appBuf[15] = 0;
   tft.print(appBuf);
 
-  // Notification message with clean word-wrapping across up to 5 lines
+  // Notification message with clean word-wrapping across up to 10 lines
   tft.setTextSize(1);
   tft.setTextColor(COL_WHITE, COL_CARD);
 
-  int lineX = 16;
+  int lineX = 14;
   int lineY = NOTIF_CARD_Y + 30;
-  int maxCharsPerLine = 34;
+  int maxCharsPerLine = 35;
   int lineCount = 0;
-  int maxLines = 5;
+  int maxLines = 10;
 
   const char *p = msg;
   while (*p && lineCount < maxLines) {
@@ -515,13 +515,22 @@ void drawNotificationCard(const char *app, const char *msg) {
   }
 
   notifActive = true;
-  notifExpireAt = millis() + 14000;
+  notifExpireAt = millis() + 16000;
 }
 
 void clearNotificationCard() {
   if (!notifActive) return;
   tft.fillRect(8, NOTIF_CARD_Y, 224, NOTIF_CARD_H + 2, COL_BG);
   notifActive = false;
+
+  // Restore divider and volume widget cleanly
+  tft.drawFastHLine(10, CLK_DIV3_Y, 220, COL_BORDER);
+  volLabelDrawn = false;
+  lastMuteState = -1;
+  lastVolDisp   = -1;
+  if (lastSentVol >= 0) {
+    drawVolumeWidget(lastSentVol);
+  }
 }
 
 void drawVolumeWidget(int vol) {
@@ -1109,10 +1118,7 @@ void setup() {
   tft.begin(tft.readID());
   tft.setRotation(ROTATION);
 
-  // Clear screen
-  tft.fillScreen(COL_BG); delay(20);
-  tft.fillScreen(COL_BG);
-
+  // Begin display and play sleek intro animation
   playBootAnimation();
 
   // Read volume pot starting position
