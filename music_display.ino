@@ -1078,38 +1078,69 @@ void updateWaitPcAnimation() {
 void playBootAnimation() {
   tft.fillScreen(COL_BG);
 
-  // 1. Sleek Spotify Vector Logo centered at (108, 55)
-  tft.drawBitmap(108, 55, logo24, 24, 24, COL_GREEN, COL_BG);
-
-  // 2. High-Tech Brand Text
-  tft.setTextSize(3);
-  tft.setTextColor(COL_WHITE, COL_BG);
-  tft.setCursor(56, 95);
-  tft.print(F("SPOTIFY"));
-
-  tft.setTextSize(2);
-  tft.setTextColor(COL_GREEN, COL_BG);
-  tft.setCursor(96, 126);
-  tft.print(F("DECK"));
-
-  // 3. Subtitle / Version
-  tft.setTextSize(1);
-  tft.setTextColor(0x07FF, COL_BG);
-  tft.setCursor(76, 154);
-  tft.print(F("HARDWARE EDITION"));
-
-  // 4. Smooth Laser Progress Scan
-  tft.drawRoundRect(35, 180, 170, 6, 3, COL_TRACK);
-  for (int w = 4; w <= 164; w += 10) {
-    tft.fillRoundRect(38, 181, w, 4, 2, COL_GREEN);
-    delay(20);
+  // ── Phase 1: Expanding color rings burst from center ──
+  for (int r = 12; r <= 72; r += 12) {
+    uint16_t c;
+    switch ((r / 12) % 4) {
+      case 0: c = 0x07FF; break;
+      case 1: c = 0xF81F; break;
+      case 2: c = 0xFD20; break;
+      default: c = COL_GREEN;
+    }
+    tft.drawCircle(120, 110, r, c);
+    delay(35);
   }
 
+  // ── Phase 2: Sparkle particles ──
+  for (int i = 0; i < 15; i++)
+    tft.fillRect(25 + (i * 41) % 190, 35 + (i * 59) % 160, 2, 2,
+                 (i & 1) ? 0x07FF : 0xFFE0);
+  delay(80);
+
+  // ── Phase 3: Clean slate ──
+  tft.fillScreen(COL_BG);
+
+  // ── Phase 4: Laptop icon ──
+  tft.drawRoundRect(85, 68, 70, 48, 3, 0x07FF);
+  tft.fillRoundRect(88, 71, 64, 42, 2, COL_SURFACE);
+  tft.drawFastHLine(92, 92, 56, COL_GREEN);
+  tft.fillCircle(120, 84, 3, COL_GREEN);
+  tft.fillRect(80, 118, 80, 4, COL_TRACK);
+  tft.fillRect(84, 122, 72, 6, COL_TRACK);
+  delay(200);
+
+  // ── Phase 5: "SMART DECK" rainbow letters ──
+  tft.setTextSize(3);
+  for (int i = 0; i < 10; i++) {
+    uint16_t lc;
+    switch (i % 5) {
+      case 0: lc = 0x07FF; break;
+      case 1: lc = 0xFFE0; break;
+      case 2: lc = COL_GREEN; break;
+      case 3: lc = 0xF81F; break;
+      default: lc = 0xFD20;
+    }
+    tft.setTextColor(lc, COL_BG);
+    tft.setCursor(12 + i * 22, 150);
+    static const char sd[] PROGMEM = "SMART DECK";
+    tft.write(pgm_read_byte(&sd[i]));
+    delay(40);
+  }
+
+  // ── Phase 6: Rainbow progress bar ──
+  tft.drawRoundRect(25, 198, 190, 8, 4, COL_TRACK);
+  for (int w = 0; w < 180; w += 12) {
+    tft.fillRoundRect(28, 200, w + 12, 4, 2,
+      (w < 45) ? 0x07FF : (w < 90) ? 0xF81F : (w < 135) ? 0xFD20 : COL_GREEN);
+    delay(15);
+  }
+
+  // ── Phase 7: Ready ──
   tft.setTextSize(1);
-  tft.setTextColor(COL_GRAY_LT, COL_BG);
-  tft.setCursor(85, 202);
+  tft.setTextColor(0x07FF, COL_BG);
+  tft.setCursor(84, 220);
   tft.print(F("SYSTEM READY"));
-  delay(350);
+  delay(300);
 }
 
 void setup() {
