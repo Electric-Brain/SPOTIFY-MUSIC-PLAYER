@@ -1061,6 +1061,24 @@ void parseCommand(char *cmd) {
   }
   else if (strcmp(cmd, "#UNLOCK") == 0) {
     if (currentMode == MODE_WAIT_PC) {
+      tft.fillScreen(COL_BG);
+      tft.fillCircle(120, 105, 24, COL_GREEN);
+      tft.drawLine(108, 105, 116, 113, COL_WHITE);
+      tft.drawLine(109, 105, 117, 113, COL_WHITE);
+      tft.drawLine(116, 113, 132, 97, COL_WHITE);
+      tft.drawLine(117, 113, 133, 97, COL_WHITE);
+
+      tft.setTextSize(2);
+      tft.setTextColor(COL_WHITE, COL_BG);
+      tft.setCursor(62, 148);
+      tft.print(F("CONNECTED"));
+
+      tft.setTextSize(1);
+      tft.setTextColor(COL_GRAY_LT, COL_BG);
+      tft.setCursor(80, 172);
+      tft.print(F("SYSTEM READY"));
+      delay(350);
+
       setupClockLayout();
     }
   }
@@ -1163,19 +1181,20 @@ void setupWaitPcLayout() {
   // Main Status Text
   tft.setTextSize(3);
   tft.setTextColor(COL_WHITE, COL_BG);
-  tft.setCursor(42, 160);
-  tft.print(F("PC LOCKED"));
+  tft.setCursor(66, 150);
+  tft.print(F("LOCKED"));
 
   // Secondary text
-  tft.setTextSize(1);
-  tft.setTextColor(COL_GRAY_LT, COL_BG);
-  tft.setCursor(44, 196);
-  tft.print(F("WAITING FOR PC TO UNLOCK"));
+  tft.setTextSize(2);
+  tft.setTextColor(COL_WHITE, COL_BG);
+  tft.setCursor(36, 180);
+  tft.print(F("ENTER PASSWORD"));
 
   // Info label
-  tft.setTextColor(0x07FF, COL_BG);
-  tft.setCursor(48, 218);
-  tft.print(F("AUTO-RESUMES ON LOGIN"));
+  tft.setTextSize(1);
+  tft.setTextColor(COL_GRAY_LT, COL_BG);
+  tft.setCursor(50, 212);
+  tft.print(F("Waiting for PC login..."));
 
   // Bottom pulsing track rail
   tft.drawRoundRect(30, 252, 180, 6, 3, COL_TRACK);
@@ -1245,10 +1264,8 @@ void setup() {
   // Read volume pot starting position
   checkVolumePot();
 
-  // Start in Clock mode with placeholder "Connecting..." text
-  // MODE_WAIT_PC is ONLY entered via explicit #LOCK command from Python
-  setupClockLayout();
-  renderClock("--:--:--", "--", "Connecting...");
+  // Start in Locked / Waiting PC mode by default until Windows logs in & unlocks
+  setupWaitPcLayout();
 
   // Flush any stale/corrupted bytes that arrived during bootloader & splash delays
   while (Serial.available()) Serial.read();

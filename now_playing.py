@@ -886,14 +886,24 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
     worker_task = asyncio.create_task(telemetry_background_worker(notif_listener, clock_state))
     reader_task = asyncio.create_task(serial_reader_worker(ser, clock_state))
 
-    # Send initial clock & system dashboard immediately upon connection so deck never hangs!
-    try:
+    # Check if Windows is currently locked or at login screen
+    if is_workstation_locked():
+        was_locked = True
+        try:
+            ser.write(b"#LOCK\n")
+            log("Workstation is locked at startup -> sent #LOCK to display")
+        except Exception:
+            pass
+    else:
+        was_locked = False
+        try:
+            ser.write(b"#UNLOCK\n")
+            log("Workstation is unlocked at startup -> sent #UNLOCK to display")
+        except Exception:
+            pass
+        clock_state["clock_mode"] = True
+        clock_state["last_sys_sent"] = 0.0
         send_clock_dashboard(ser, clock_state)
-        log("Initial clock & telemetry sent to display")
-    except Exception:
-        pass
-
-    was_locked = True  # Start True so first "unlocked" check sends #UNLOCK + dashboard
 
     try:
         while ser.is_open:
