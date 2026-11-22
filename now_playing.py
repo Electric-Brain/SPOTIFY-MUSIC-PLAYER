@@ -54,6 +54,7 @@ from pycaw.pycaw import AudioUtilities, IMMDeviceEnumerator, IAudioEndpointVolum
 from pycaw.constants import CLSID_MMDeviceEnumerator, EDataFlow, ERole
 import serial
 import serial.tools.list_ports
+from winrt.windows.devices.radios import Radio, RadioKind, RadioState
 from winrt.windows.devices.bluetooth import BluetoothDevice, BluetoothLEDevice, BluetoothConnectionStatus
 from winrt.windows.devices.enumeration import DeviceInformation
 from winrt.windows.media.control import (
@@ -115,14 +116,25 @@ _cached_wifi: str = ""
 _wifi_last_check: float = 0.0
 
 
-def get_wifi_ssid() -> str:
+async def get_wifi_status() -> str:
     global _cached_wifi, _wifi_last_check
     now = time.time()
     if now - _wifi_last_check < 4.0 and _cached_wifi:
         return _cached_wifi
     _wifi_last_check = now
+
     try:
-        out = subprocess.check_output(
+        radios = await Radio.get_radios_async()
+        wifi_r = next((r for r in radios if r.kind == RadioKind.WI_FI), None)
+        if wifi_r and wifi_r.state != RadioState.ON:
+            _cached_wifi = "Off"
+            return _cached_wifi
+    except Exception:
+        pass
+
+    try:
+        out = await asyncio.to_thread(
+            subprocess.check_output,
             ["netsh", "wlan", "show", "interfaces"],
             creationflags=0x08000000,
             text=True,
@@ -136,15 +148,15 @@ def get_wifi_ssid() -> str:
                 return _cached_wifi
         st = re.search(r'^\s*State\s*:\s*(.+)$', out, re.MULTILINE)
         if st and "disconnected" in st.group(1).lower():
-            _cached_wifi = "Disconnected"
+            _cached_wifi = "On"
             return _cached_wifi
     except Exception:
         pass
-    _cached_wifi = "Disconnected"
+    _cached_wifi = "On"
     return _cached_wifi
 
 
-_cached_bt: str = "None"
+_cached_bt: str = "Off"
 _bt_last_check: float = 0.0
 
 
@@ -154,6 +166,16 @@ async def get_bluetooth_device() -> str:
     if now - _bt_last_check < 3.0:
         return _cached_bt
     _bt_last_check = now
+
+    try:
+        radios = await Radio.get_radios_async()
+        bt_r = next((r for r in radios if r.kind == RadioKind.BLUETOOTH), None)
+        if bt_r and bt_r.state != RadioState.ON:
+            _cached_bt = "Off"
+            return _cached_bt
+    except Exception:
+        pass
+
     try:
         selector = BluetoothDevice.get_device_selector_from_connection_status(BluetoothConnectionStatus.CONNECTED)
         devices = await DeviceInformation.find_all_async_aqs_filter(selector)
@@ -179,7 +201,7 @@ async def get_bluetooth_device() -> str:
                 pass
     except Exception:
         pass
-    _cached_bt = "None"
+    _cached_bt = "On"
     return _cached_bt
 
 
@@ -339,8 +361,8 @@ async def telemetry_background_worker(notif_listener, state_tracker: dict):
                 state_tracker["battery_pct"] = pct
                 state_tracker["charging"] = chg
 
-                # 2. Async Wi-Fi query (in thread so subprocess doesn't block event loop)
-                wifi = await asyncio.to_thread(get_wifi_ssid)
+                # 2. Async Wi-Fi query (checked with Radio state & netsh)
+                wifi = await get_wifi_status()
                 state_tracker["wifi"] = wifi
 
                 # 3. Bluetooth query (WinRT async)
@@ -855,7 +877,7 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
         pct, chg = get_battery_info()
         clock_state["battery_pct"] = pct
         clock_state["charging"] = chg
-        clock_state["wifi"] = get_wifi_ssid()
+        clock_state["wifi"] = await get_wifi_status()
         clock_state["bt"] = await get_bluetooth_device()
     except Exception:
         pass

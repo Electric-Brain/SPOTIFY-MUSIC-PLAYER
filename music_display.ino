@@ -122,6 +122,8 @@ int  lastSentVol        = -1;
 #define POT_PIN         A5
 void drawVolumeWidget(int vol);
 void checkVolumePot();
+void drawWaterWidget(bool fullRedraw);
+void updateWaterAnimation();
 
 bool          notifActive   = false;
 unsigned long notifExpireAt = 0;
@@ -287,6 +289,7 @@ void setupClockLayout() {
   if (lastSentVol >= 0) {
     drawVolumeWidget(lastSentVol);
   }
+  drawWaterWidget(true);
 }
 
 void renderClockDigits(const char *curDigits) {
@@ -401,8 +404,10 @@ void drawBatteryWidget(int x, int y, int pct, bool chg) {
 void drawWifiWidget(int x, int y, const char *ssid) {
   tft.fillRect(x, y - 2, 215, 20, COL_BG);
 
-  bool connected = (strcmp(ssid, "Disconnected") != 0 && strcmp(ssid, "No Wi-Fi") != 0 && strlen(ssid) > 0);
-  uint16_t col = connected ? COL_GREEN : COL_GRAY_MD;
+  bool isOff  = (strcmp(ssid, "Off") == 0);
+  bool isOn   = (strcmp(ssid, "On") == 0);
+  bool isConn = (!isOff && !isOn && strlen(ssid) > 0);
+  uint16_t col = isConn ? COL_GREEN : (isOn ? COL_GRAY_LT : COL_GRAY_MD);
 
   // Wi-Fi signal arcs
   tft.fillCircle(x + 8, y + 13, 2, col);
@@ -412,10 +417,10 @@ void drawWifiWidget(int x, int y, const char *ssid) {
 
   // SSID text
   tft.setTextSize(2);
-  tft.setTextColor(connected ? COL_WHITE : COL_GRAY_MD, COL_BG);
+  tft.setTextColor(isConn ? COL_WHITE : col, COL_BG);
   tft.setCursor(x + 26, y);
   char buf[17];
-  strncpy(buf, connected ? ssid : "Disconnected", 16);
+  strncpy(buf, ssid, 16);
   buf[16] = 0;
   tft.print(buf);
 }
@@ -423,8 +428,10 @@ void drawWifiWidget(int x, int y, const char *ssid) {
 void drawBtWidget(int x, int y, const char *device) {
   tft.fillRect(x, y - 2, 215, 20, COL_BG);
 
-  bool connected = (strcmp(device, "None") != 0 && strcmp(device, "Disconnected") != 0 && strlen(device) > 0);
-  uint16_t col = connected ? 0x051F : COL_GRAY_MD; // Blue or dim
+  bool isOff  = (strcmp(device, "Off") == 0);
+  bool isOn   = (strcmp(device, "On") == 0);
+  bool isConn = (!isOff && !isOn && strlen(device) > 0 && strcmp(device, "None") != 0);
+  uint16_t col = isConn ? 0x051F : (isOn ? COL_GRAY_LT : COL_GRAY_MD);
 
   // Bluetooth ᛒ symbol
   tft.drawFastVLine(x + 6, y, 15, col);
@@ -436,10 +443,10 @@ void drawBtWidget(int x, int y, const char *device) {
 
   // Device Name text
   tft.setTextSize(2);
-  tft.setTextColor(connected ? COL_WHITE : COL_GRAY_MD, COL_BG);
+  tft.setTextColor(isConn ? COL_WHITE : col, COL_BG);
   tft.setCursor(x + 26, y);
   char buf[17];
-  strncpy(buf, connected ? device : "Disconnected", 16);
+  strncpy(buf, (isOff || isOn || isConn) ? device : "Off", 16);
   buf[16] = 0;
   tft.print(buf);
 }
@@ -530,6 +537,101 @@ void clearNotificationCard() {
   lastVolDisp   = -1;
   if (lastSentVol >= 0) {
     drawVolumeWidget(lastSentVol);
+  }
+  drawWaterWidget(true);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  ANIMATED KAWAII WATER REMINDER (DESK HYDRATION BUDDY)
+// ═══════════════════════════════════════════════════════════════════
+
+#define WATER_CARD_Y 218
+#define WATER_CARD_H 94
+
+unsigned long waterLastDrank = 0;
+bool          waterAlert     = false;
+unsigned long lastBlinkTime  = 0;
+bool          eyesClosed     = false;
+
+void drawWaterDroplet(int cx, int cy, bool blink) {
+  tft.fillTriangle(cx, cy - 24, cx - 14, cy, cx + 14, cy, 0x07FF);
+  tft.fillCircle(cx, cy, 14, 0x07FF);
+  tft.drawPixel(cx - 6, cy - 11, COL_WHITE);
+  tft.drawPixel(cx - 5, cy - 12, COL_WHITE);
+
+  tft.fillCircle(cx - 9, cy + 4, 2, 0xFA14);
+  tft.fillCircle(cx + 9, cy + 4, 2, 0xFA14);
+
+  if (blink) {
+    tft.fillRect(cx - 8, cy - 2, 16, 5, 0x07FF);
+    tft.drawFastHLine(cx - 6, cy, 4, COL_WHITE);
+    tft.drawFastHLine(cx + 2, cy, 4, COL_WHITE);
+  } else {
+    tft.fillCircle(cx - 5, cy, 2, COL_WHITE);
+    tft.fillCircle(cx + 5, cy, 2, COL_WHITE);
+    tft.drawPixel(cx - 5, cy, COL_BG);
+    tft.drawPixel(cx + 5, cy, COL_BG);
+  }
+
+  tft.drawPixel(cx - 2, cy + 6, COL_WHITE);
+  tft.drawPixel(cx - 1, cy + 7, COL_WHITE);
+  tft.drawPixel(cx,     cy + 7, COL_WHITE);
+  tft.drawPixel(cx + 1, cy + 7, COL_WHITE);
+  tft.drawPixel(cx + 2, cy + 6, COL_WHITE);
+}
+
+void drawWaterWidget(bool fullRedraw) {
+  if (currentMode != MODE_CLOCK || notifActive) return;
+
+  if (fullRedraw) {
+    tft.fillRoundRect(8, WATER_CARD_Y, 224, WATER_CARD_H, 6, COL_CARD);
+    tft.drawRoundRect(8, WATER_CARD_Y, 224, WATER_CARD_H, 6, waterAlert ? 0x07FF : COL_BORDER);
+    drawWaterDroplet(38, WATER_CARD_Y + 44, false);
+
+    tft.setTextSize(2);
+    tft.setTextColor(0x07FF, COL_CARD);
+    tft.setCursor(66, WATER_CARD_Y + 12);
+    tft.print(F("HYDRATE"));
+
+    tft.setTextSize(1);
+    tft.setTextColor(waterAlert ? 0xFFE0 : COL_WHITE, COL_CARD);
+    tft.setCursor(66, WATER_CARD_Y + 36);
+    tft.print(waterAlert ? F("Time to drink water!") : F("Stay fresh & sip!"));
+
+    tft.setTextColor(waterAlert ? COL_GREEN : COL_GRAY_LT, COL_CARD);
+    tft.setCursor(66, WATER_CARD_Y + 52);
+    tft.print(waterAlert ? F("* Take a sip now! *") : F("Reminder: Every 30m"));
+
+    tft.drawRoundRect(66, WATER_CARD_Y + 70, 150, 6, 3, COL_TRACK);
+  }
+
+  unsigned long elapsed = millis() - waterLastDrank;
+  const unsigned long interval = 30UL * 60UL * 1000UL;
+  int fillW = (elapsed >= interval) ? 146 : (int)((elapsed * 146) / interval);
+  if (fillW < 2) fillW = 2;
+  tft.fillRoundRect(68, WATER_CARD_Y + 72, fillW, 2, 1, waterAlert ? 0x07FF : COL_GREEN);
+}
+
+void updateWaterAnimation() {
+  if (currentMode != MODE_CLOCK || notifActive) return;
+
+  unsigned long now = millis();
+  const unsigned long interval = 30UL * 60UL * 1000UL;
+
+  if (!waterAlert && (now - waterLastDrank >= interval)) {
+    waterAlert = true;
+    drawWaterWidget(true);
+  }
+
+  // Eye blink every 3.5s
+  if (!eyesClosed && (now - lastBlinkTime > 3500)) {
+    drawWaterDroplet(38, WATER_CARD_Y + 44, true);
+    eyesClosed = true;
+    lastBlinkTime = now;
+  } else if (eyesClosed && (now - lastBlinkTime > 150)) {
+    drawWaterDroplet(38, WATER_CARD_Y + 44, false);
+    eyesClosed = false;
+    lastBlinkTime = now;
   }
 }
 
@@ -983,6 +1085,11 @@ void checkVolumePot() {
       Serial.print(F("#VOL:"));
       Serial.println(vol);
       lastSentVol = vol;
+      if (waterAlert) {
+        waterAlert = false;
+        waterLastDrank = millis();
+        drawWaterWidget(true);
+      }
       if (currentMode == MODE_CLOCK) {
         drawVolumeWidget(vol);
       }
@@ -1078,69 +1185,33 @@ void updateWaitPcAnimation() {
 void playBootAnimation() {
   tft.fillScreen(COL_BG);
 
-  // ── Phase 1: Expanding color rings burst from center ──
-  for (int r = 12; r <= 72; r += 12) {
-    uint16_t c;
-    switch ((r / 12) % 4) {
-      case 0: c = 0x07FF; break;
-      case 1: c = 0xF81F; break;
-      case 2: c = 0xFD20; break;
-      default: c = COL_GREEN;
-    }
-    tft.drawCircle(120, 110, r, c);
-    delay(35);
-  }
+  // ── 1. Sleek Minimalist Laptop (Apple / Google hardware aesthetic) ──
+  tft.drawRoundRect(88, 72, 64, 42, 3, COL_WHITE);
+  tft.fillRoundRect(90, 74, 60, 38, 2, COL_SURFACE);
+  tft.fillCircle(120, 76, 1, COL_GREEN);        // ambient camera dot
+  tft.fillRect(78, 114, 84, 4, COL_WHITE);       // unibody base
+  tft.fillRect(112, 114, 16, 2, COL_SURFACE);    // trackpad groove
+  delay(180);
 
-  // ── Phase 2: Sparkle particles ──
-  for (int i = 0; i < 15; i++)
-    tft.fillRect(25 + (i * 41) % 190, 35 + (i * 59) % 160, 2, 2,
-                 (i & 1) ? 0x07FF : 0xFFE0);
-  delay(80);
+  // ── 2. Clean Typography ──
+  tft.setTextSize(2);
+  tft.setTextColor(COL_WHITE, COL_BG);
+  tft.setCursor(62, 142);
+  tft.print(F("SMART DECK"));
 
-  // ── Phase 3: Clean slate ──
-  tft.fillScreen(COL_BG);
-
-  // ── Phase 4: Laptop icon ──
-  tft.drawRoundRect(85, 68, 70, 48, 3, 0x07FF);
-  tft.fillRoundRect(88, 71, 64, 42, 2, COL_SURFACE);
-  tft.drawFastHLine(92, 92, 56, COL_GREEN);
-  tft.fillCircle(120, 84, 3, COL_GREEN);
-  tft.fillRect(80, 118, 80, 4, COL_TRACK);
-  tft.fillRect(84, 122, 72, 6, COL_TRACK);
-  delay(200);
-
-  // ── Phase 5: "SMART DECK" rainbow letters ──
-  tft.setTextSize(3);
-  for (int i = 0; i < 10; i++) {
-    uint16_t lc;
-    switch (i % 5) {
-      case 0: lc = 0x07FF; break;
-      case 1: lc = 0xFFE0; break;
-      case 2: lc = COL_GREEN; break;
-      case 3: lc = 0xF81F; break;
-      default: lc = 0xFD20;
-    }
-    tft.setTextColor(lc, COL_BG);
-    tft.setCursor(12 + i * 22, 150);
-    static const char sd[] PROGMEM = "SMART DECK";
-    tft.write(pgm_read_byte(&sd[i]));
-    delay(40);
-  }
-
-  // ── Phase 6: Rainbow progress bar ──
-  tft.drawRoundRect(25, 198, 190, 8, 4, COL_TRACK);
-  for (int w = 0; w < 180; w += 12) {
-    tft.fillRoundRect(28, 200, w + 12, 4, 2,
-      (w < 45) ? 0x07FF : (w < 90) ? 0xF81F : (w < 135) ? 0xFD20 : COL_GREEN);
-    delay(15);
-  }
-
-  // ── Phase 7: Ready ──
   tft.setTextSize(1);
-  tft.setTextColor(0x07FF, COL_BG);
-  tft.setCursor(84, 220);
-  tft.print(F("SYSTEM READY"));
-  delay(300);
+  tft.setTextColor(COL_GRAY_MD, COL_BG);
+  tft.setCursor(76, 168);
+  tft.print(F("DESK COMPANION"));
+
+  // ── 3. Smooth macOS-style minimal progress bar ──
+  tft.drawRoundRect(45, 196, 150, 4, 2, COL_TRACK);
+  for (int w = 0; w <= 146; w += 4) {
+    tft.fillRoundRect(47, 197, w, 2, 1, COL_WHITE);
+    delay(16);
+  }
+
+  delay(350);
 }
 
 void setup() {
@@ -1183,6 +1254,7 @@ void loop() {
     if (notifActive && millis() > notifExpireAt) {
       clearNotificationCard();
     }
+    updateWaterAnimation();
 
     // Autonomous precision quartz ticker: advances seconds every 1000ms live
     if (clockSynced && (millis() - clkLastTick >= 1000)) {
@@ -1208,10 +1280,19 @@ void loop() {
       }
       char tBuf[9];
       if (clkHour < 10) {
-        snprintf(tBuf, sizeof(tBuf), " %d:%02d:%02d", clkHour, clkMin, clkSec);
+        tBuf[0] = ' ';
+        tBuf[1] = '0' + clkHour;
       } else {
-        snprintf(tBuf, sizeof(tBuf), "%d:%02d:%02d", clkHour, clkMin, clkSec);
+        tBuf[0] = '0' + (clkHour / 10);
+        tBuf[1] = '0' + (clkHour % 10);
       }
+      tBuf[2] = ':';
+      tBuf[3] = '0' + (clkMin / 10);
+      tBuf[4] = '0' + (clkMin % 10);
+      tBuf[5] = ':';
+      tBuf[6] = '0' + (clkSec / 10);
+      tBuf[7] = '0' + (clkSec % 10);
+      tBuf[8] = 0;
       renderClockDigits(tBuf);
     }
   }
