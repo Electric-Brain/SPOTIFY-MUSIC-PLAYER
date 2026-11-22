@@ -122,7 +122,7 @@ int  lastSentVol        = -1;
 #define POT_PIN         A5
 void drawVolumeWidget(int vol);
 void checkVolumePot();
-void drawWaterWidget(bool fullRedraw);
+void clearWaterCard();
 void updateWaterAnimation();
 
 bool          notifActive   = false;
@@ -289,7 +289,6 @@ void setupClockLayout() {
   if (lastSentVol >= 0) {
     drawVolumeWidget(lastSentVol);
   }
-  drawWaterWidget(true);
 }
 
 void renderClockDigits(const char *curDigits) {
@@ -538,18 +537,18 @@ void clearNotificationCard() {
   if (lastSentVol >= 0) {
     drawVolumeWidget(lastSentVol);
   }
-  drawWaterWidget(true);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  ANIMATED KAWAII WATER REMINDER (DESK HYDRATION BUDDY)
+//  ANIMATED KAWAII WATER REMINDER (12-SEC POP-UP EVERY 30 MIN)
 // ═══════════════════════════════════════════════════════════════════
 
 #define WATER_CARD_Y 218
 #define WATER_CARD_H 94
 
-unsigned long waterLastDrank = 0;
-bool          waterAlert     = false;
+unsigned long waterLastAlert = 0;
+bool          waterActive    = false;
+unsigned long waterExpireAt  = 0;
 unsigned long lastBlinkTime  = 0;
 bool          eyesClosed     = false;
 
@@ -580,58 +579,79 @@ void drawWaterDroplet(int cx, int cy, bool blink) {
   tft.drawPixel(cx + 2, cy + 6, COL_WHITE);
 }
 
-void drawWaterWidget(bool fullRedraw) {
-  if (currentMode != MODE_CLOCK || notifActive) return;
+void drawWaterCard() {
+  tft.fillRoundRect(8, WATER_CARD_Y, 224, WATER_CARD_H, 6, COL_CARD);
+  tft.drawRoundRect(8, WATER_CARD_Y, 224, WATER_CARD_H, 6, 0x07FF);
+  drawWaterDroplet(38, WATER_CARD_Y + 44, false);
 
-  if (fullRedraw) {
-    tft.fillRoundRect(8, WATER_CARD_Y, 224, WATER_CARD_H, 6, COL_CARD);
-    tft.drawRoundRect(8, WATER_CARD_Y, 224, WATER_CARD_H, 6, waterAlert ? 0x07FF : COL_BORDER);
-    drawWaterDroplet(38, WATER_CARD_Y + 44, false);
+  tft.setTextSize(2);
+  tft.setTextColor(0x07FF, COL_CARD);
+  tft.setCursor(66, WATER_CARD_Y + 14);
+  tft.print(F("HYDRATE!"));
 
-    tft.setTextSize(2);
-    tft.setTextColor(0x07FF, COL_CARD);
-    tft.setCursor(66, WATER_CARD_Y + 12);
-    tft.print(F("HYDRATE"));
+  tft.setTextSize(1);
+  tft.setTextColor(0xFFE0, COL_CARD);
+  tft.setCursor(66, WATER_CARD_Y + 38);
+  tft.print(F("Time to drink water!"));
 
-    tft.setTextSize(1);
-    tft.setTextColor(waterAlert ? 0xFFE0 : COL_WHITE, COL_CARD);
-    tft.setCursor(66, WATER_CARD_Y + 36);
-    tft.print(waterAlert ? F("Time to drink water!") : F("Stay fresh & sip!"));
+  tft.setTextColor(COL_GREEN, COL_CARD);
+  tft.setCursor(66, WATER_CARD_Y + 54);
+  tft.print(F("* Take a sip now! 💧 *"));
 
-    tft.setTextColor(waterAlert ? COL_GREEN : COL_GRAY_LT, COL_CARD);
-    tft.setCursor(66, WATER_CARD_Y + 52);
-    tft.print(waterAlert ? F("* Take a sip now! *") : F("Reminder: Every 30m"));
+  // 12-second countdown bar
+  tft.drawRoundRect(66, WATER_CARD_Y + 72, 150, 4, 2, COL_TRACK);
+  tft.fillRoundRect(66, WATER_CARD_Y + 72, 150, 4, 2, 0x07FF);
+}
 
-    tft.drawRoundRect(66, WATER_CARD_Y + 70, 150, 6, 3, COL_TRACK);
-  }
-
-  unsigned long elapsed = millis() - waterLastDrank;
-  const unsigned long interval = 30UL * 60UL * 1000UL;
-  int fillW = (elapsed >= interval) ? 146 : (int)((elapsed * 146) / interval);
-  if (fillW < 2) fillW = 2;
-  tft.fillRoundRect(68, WATER_CARD_Y + 72, fillW, 2, 1, waterAlert ? 0x07FF : COL_GREEN);
+void clearWaterCard() {
+  if (!waterActive) return;
+  tft.fillRect(8, WATER_CARD_Y, 224, WATER_CARD_H + 2, COL_BG);
+  waterActive = false;
+  waterLastAlert = millis();
 }
 
 void updateWaterAnimation() {
-  if (currentMode != MODE_CLOCK || notifActive) return;
+  if (currentMode != MODE_CLOCK) return;
 
   unsigned long now = millis();
-  const unsigned long interval = 30UL * 60UL * 1000UL;
+  const unsigned long interval = 30UL * 60UL * 1000UL; // 30 minutes
 
-  if (!waterAlert && (now - waterLastDrank >= interval)) {
-    waterAlert = true;
-    drawWaterWidget(true);
+  // Trigger pop-up every 30 minutes if no notification is showing
+  if (!waterActive && !notifActive) {
+    if (now - waterLastAlert >= interval) {
+      waterActive   = true;
+      waterExpireAt = now + 12000; // Visible for 12 seconds
+      drawWaterCard();
+      lastBlinkTime = now;
+      eyesClosed    = false;
+    }
   }
 
-  // Eye blink every 3.5s
-  if (!eyesClosed && (now - lastBlinkTime > 3500)) {
-    drawWaterDroplet(38, WATER_CARD_Y + 44, true);
-    eyesClosed = true;
-    lastBlinkTime = now;
-  } else if (eyesClosed && (now - lastBlinkTime > 150)) {
-    drawWaterDroplet(38, WATER_CARD_Y + 44, false);
-    eyesClosed = false;
-    lastBlinkTime = now;
+  // Active animation while pop-up is showing
+  if (waterActive) {
+    if (notifActive || now > waterExpireAt) {
+      clearWaterCard();
+      return;
+    }
+
+    // Eye blink every 2.5s
+    if (!eyesClosed && (now - lastBlinkTime > 2500)) {
+      drawWaterDroplet(38, WATER_CARD_Y + 44, true);
+      eyesClosed = true;
+      lastBlinkTime = now;
+    } else if (eyesClosed && (now - lastBlinkTime > 150)) {
+      drawWaterDroplet(38, WATER_CARD_Y + 44, false);
+      eyesClosed = false;
+      lastBlinkTime = now;
+    }
+
+    // Shrinking countdown bar
+    long rem = waterExpireAt - now;
+    if (rem < 0) rem = 0;
+    int curW = (int)((rem * 150L) / 12000L);
+    if (curW < 150) {
+      tft.fillRect(66 + curW, WATER_CARD_Y + 72, 150 - curW, 4, COL_TRACK);
+    }
   }
 }
 
@@ -983,6 +1003,7 @@ void handleSys(char *payload) {
 
 void handleNotif(char *payload) {
   if (currentMode != MODE_CLOCK) return;
+  if (waterActive) clearWaterCard();
 
   char *hash = strchr(payload, '#');
   if (hash) *hash = 0;
@@ -1085,10 +1106,8 @@ void checkVolumePot() {
       Serial.print(F("#VOL:"));
       Serial.println(vol);
       lastSentVol = vol;
-      if (waterAlert) {
-        waterAlert = false;
-        waterLastDrank = millis();
-        drawWaterWidget(true);
+      if (waterActive) {
+        clearWaterCard();
       }
       if (currentMode == MODE_CLOCK) {
         drawVolumeWidget(vol);
