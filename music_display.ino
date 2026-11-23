@@ -893,6 +893,15 @@ void drawVolumeWidget(int vol) {
 //  COVER IMAGE RECEIVER (WITH FAST MID-STREAM ABORT SUPPORT)
 // ═══════════════════════════════════════════════════════════════════
 
+void drawNoImgPlaceholder() {
+  tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_SURFACE);
+  if (currentAppSource == 'C') {
+    drawChromeIcon24(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2);
+  } else {
+    tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logo24, 24, 24, COL_GREEN, COL_SURFACE);
+  }
+}
+
 void receiveCoverImage() {
   Serial.write('K'); // ACK start
 
@@ -914,8 +923,7 @@ void receiveCoverImage() {
 
     // Check for Abort signal (#A) from PC when user switches song mid-stream
     if (c1 == '#' && c2 == 'A') {
-      tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_BG);
-      tft.drawRoundRect(ART_X - 2, ART_Y - 2, ART_SIZE + 4, ART_SIZE + 4, 4, COL_BORDER);
+      drawNoImgPlaceholder();
       return; // Instantly exit and return to loop() to receive new song!
     }
 
@@ -1198,12 +1206,7 @@ void parseCommand(char *cmd) {
     receiveCoverImage();
   }
   else if (strcmp(cmd, "#NOIMG") == 0) {
-    tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_SURFACE);
-    if (currentAppSource == 'C') {
-      drawChromeIcon24(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2);
-    } else {
-      tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logo24, 24, 24, COL_GREEN, COL_SURFACE);
-    }
+    drawNoImgPlaceholder();
   }
   else if (strncmp(cmd, "#T:", 3) == 0) {
     handleTimeUpdate(cmd + 3);

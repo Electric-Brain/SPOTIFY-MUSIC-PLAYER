@@ -604,14 +604,11 @@ async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
                             pass
                     elif line == "#READY":
                         log("Arduino sent #READY handshake")
+                        state_tracker["force_track_refresh"] = True
                         if not is_workstation_locked():
                             try:
                                 ser.write(b"#UNLOCK\n")
                                 log("Workstation unlocked -> sent #UNLOCK on #READY")
-                                await asyncio.sleep(0.4)
-                                state_tracker["clock_mode"] = True
-                                state_tracker["last_sys_sent"] = 0.0
-                                send_clock_dashboard(ser, state_tracker)
                             except Exception:
                                 pass
                         else:
@@ -1097,6 +1094,7 @@ async def send_cover_async(ser: serial.Serial, img_bytes: bytes, ses, active_tra
         await asyncio.sleep(0.005)
 
     if not ack:
+        log("Cover stream failed: Arduino did not ACK #IMG_START")
         return False
 
     row_bytes = ART_SIZE * 2
@@ -1107,6 +1105,7 @@ async def send_cover_async(ser: serial.Serial, img_bytes: bytes, ses, active_tra
                 cur_info = ses.get_playback_info()
                 if cur_info and cur_info.playback_status != PlayStatus.PLAYING:
                     # User paused! Abort cover stream immediately
+                    log("User paused during cover stream -> Aborted")
                     ser.write(b"#A\x00")
                     await asyncio.sleep(0.02)
                     ser.reset_input_buffer()
@@ -1116,11 +1115,14 @@ async def send_cover_async(ser: serial.Serial, img_bytes: bytes, ses, active_tra
                 if cur_props:
                     ct = clean(cur_props.title)
                     ca = clean(cur_props.artist or cur_props.album_artist or "")
+                    cur_app = (ses.source_app_user_model_id or "").lower()
+                    cur_src = "S" if "spotify" in cur_app else ("C" if "chrome" in cur_app else "M")
                     if not ca:
-                        ca = clean(cur_props.album_title or "Spotify")
-                    new_key = f"{ct}:::{ca}"
+                        ca = clean(cur_props.album_title or ("Chrome" if cur_src == "C" else "Spotify"))
+                    new_key = f"{cur_src}:::{ct}:::{ca}"
                     if ct and new_key != active_track_key:
                         # User skipped! Abort immediately
+                        log(f"Song skipped during cover stream: {active_track_key} -> {new_key} -> Aborted")
                         ser.write(b"#A\x00")
                         await asyncio.sleep(0.02)
                         ser.reset_input_buffer()
@@ -1142,8 +1144,10 @@ async def send_cover_async(ser: serial.Serial, img_bytes: bytes, ses, active_tra
             await asyncio.sleep(0.002)
 
         if not ack:
+            log(f"Cover stream row {r} ACK timed out")
             return False
 
+    log(f"Cover stream completed successfully (200x200) for: {active_track_key}")
     return True
 
 
@@ -1243,6 +1247,10 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
                 clock_state["last_sys_sent"] = 0.0  # Force instant dashboard refresh
                 send_clock_dashboard(ser, clock_state)
 
+            if clock_state.get("force_track_refresh"):
+                clock_state["force_track_refresh"] = False
+                last_track_id = ""
+
             ses = await get_best_session(mgr)
 
             # ── Standby / No Media Session -> Clock Mode ──
@@ -1331,16 +1339,22 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
                     else:
                         cover = get_spotify_cover_rgb565()
 
+                success = False
                 if cover:
                     clock_state["streaming_cover"] = True
                     try:
-                        await send_cover_async(ser, cover, ses, track_key)
+                        success = await send_cover_async(ser, cover, ses, track_key)
                     finally:
                         clock_state["streaming_cover"] = False
                 else:
                     ser.write(b"#NOIMG\n")
+                    success = True
 
-                last_track_id = track_key
+                if success:
+                    last_track_id = track_key
+                else:
+                    last_track_id = ""
+                    await asyncio.sleep(0.5)
 
                 try:
                     tl = ses.get_timeline_properties()
