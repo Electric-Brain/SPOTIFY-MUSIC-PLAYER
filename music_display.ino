@@ -57,6 +57,16 @@ const unsigned char PROGMEM logo24[] = {
   0x0F, 0xFF, 0xF0, 0x07, 0xFF, 0xE0, 0x03, 0xFF, 0xC0, 0x00, 0x7E, 0x00
 };
 
+// ---------- Sharp 24x24 Chrome Logo Bitmap (PROGMEM) ----------
+const unsigned char PROGMEM logoChrome24[] = {
+  0x00, 0x00, 0x00, 0x00, 0x7E, 0x00, 0x01, 0xFF, 0x80, 0x07, 0xFF, 0xE0,
+  0x0F, 0xFF, 0xF0, 0x1F, 0xFF, 0xF8, 0x07, 0xFF, 0xF8, 0x3B, 0xC0, 0x00,
+  0x3C, 0x81, 0xFC, 0x7F, 0x18, 0xFE, 0x7E, 0x3C, 0x7E, 0x7E, 0x7E, 0x7E,
+  0x7E, 0x7E, 0x7E, 0x7E, 0x3C, 0x7E, 0x7F, 0x18, 0xFE, 0x3F, 0x81, 0xFC,
+  0x3F, 0xC3, 0xFC, 0x1F, 0xF7, 0xF8, 0x1F, 0xEF, 0xF8, 0x0F, 0xEF, 0xF0,
+  0x07, 0xDF, 0xE0, 0x01, 0xDF, 0x80, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00
+};
+
 // ---------- Display Modes ----------
 enum DisplayMode {
   MODE_BOOT,
@@ -181,13 +191,26 @@ void printCleanText(int x, int y, const char *src, int maxCh, uint16_t fg, int s
   tft.print(buf);
 }
 
-void drawHeader() {
+char currentAppSource = ' ';
+
+void drawHeader(char appCode = 'S') {
+  currentAppSource = appCode;
   tft.fillRect(0, 0, 240, HDR_H, COL_BG);
-  tft.drawBitmap(8, 2, logo24, 24, 24, COL_GREEN, COL_BG);
+  if (appCode == 'C') {
+    tft.drawBitmap(8, 2, logoChrome24, 24, 24, 0xFFE0, COL_BG);
+  } else {
+    tft.drawBitmap(8, 2, logo24, 24, 24, COL_GREEN, COL_BG);
+  }
   tft.setTextSize(2);
   tft.setTextColor(COL_WHITE, COL_BG);
   tft.setCursor(36, 7);
-  tft.print(F("Spotify"));
+  if (appCode == 'C') {
+    tft.print(F("Chrome"));
+  } else if (appCode == 'M') {
+    tft.print(F("Media"));
+  } else {
+    tft.print(F("Spotify"));
+  }
   tft.drawFastHLine(0, HDR_H, 240, COL_BORDER);
 }
 
@@ -812,21 +835,26 @@ void receiveCoverImage() {
 // ═══════════════════════════════════════════════════════════════════
 
 void handleSong(char *payload) {
-  if (currentMode != MODE_MUSIC) {
-    tft.fillScreen(COL_BG);
-    drawHeader();
+  if (currentMode == MODE_WAIT_PC) return;
+
+  char *p[7];
+  byte k = 0;
+  p[k++] = payload;
+  for (char *c = payload; *c && k < 7; c++) {
+    if (*c == '|') { *c = 0; p[k++] = c + 1; }
+  }
+  if (k < 2) return;
+
+  char appCode = (k >= 7 && p[6][0]) ? p[6][0] : 'S';
+  if (currentMode != MODE_MUSIC || currentAppSource != appCode) {
+    if (currentMode != MODE_MUSIC) {
+      tft.fillScreen(COL_BG);
+    }
+    drawHeader(appCode);
     currentMode = MODE_MUSIC;
     notifActive = false;
     clockSynced = false;
   }
-
-  char *p[6];
-  byte k = 0;
-  p[k++] = payload;
-  for (char *c = payload; *c && k < 6; c++) {
-    if (*c == '|') { *c = 0; p[k++] = c + 1; }
-  }
-  if (k < 2) return;
 
   strncpy(title,  p[0], 49); title[49]  = 0;
   strncpy(artist, p[1], 49); artist[49] = 0;
@@ -1048,7 +1076,11 @@ void parseCommand(char *cmd) {
   }
   else if (strcmp(cmd, "#NOIMG") == 0) {
     tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_SURFACE);
-    tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logo24, 24, 24, COL_GREEN, COL_SURFACE);
+    if (currentAppSource == 'C') {
+      tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logoChrome24, 24, 24, 0xFFE0, COL_SURFACE);
+    } else {
+      tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logo24, 24, 24, COL_GREEN, COL_SURFACE);
+    }
   }
   else if (strncmp(cmd, "#T:", 3) == 0) {
     handleTimeUpdate(cmd + 3);

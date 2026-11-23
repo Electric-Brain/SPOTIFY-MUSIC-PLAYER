@@ -614,6 +614,12 @@ async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
                                 send_clock_dashboard(ser, state_tracker)
                             except Exception:
                                 pass
+                        else:
+                            try:
+                                ser.write(b"#LOCK\n")
+                                log("Workstation is locked -> sent #LOCK on #READY")
+                            except Exception:
+                                pass
         except Exception:
             pass
         await asyncio.sleep(0.015)
@@ -770,21 +776,84 @@ def start_session_lock_monitor():
     t = threading.Thread(target=worker, daemon=True, name='SessionLockMonitor')
     t.start()
 
+class SYSTEM_POWER_STATUS(ctypes.Structure):
+    _fields_ = [
+        ('ACLineStatus', wintypes.BYTE),
+        ('BatteryFlag', wintypes.BYTE),
+        ('BatteryLifePercent', wintypes.BYTE),
+        ('SystemStatusFlag', wintypes.BYTE),
+        ('BatteryLifeTime', wintypes.DWORD),
+        ('BatteryFullLifeTime', wintypes.DWORD),
+    ]
+
+_cached_screen_timeout_ac = 1800
+_cached_screen_timeout_dc = 180
+_last_timeout_query = 0.0
+
+def get_screen_timeout_seconds() -> int:
+    global _cached_screen_timeout_ac, _cached_screen_timeout_dc, _last_timeout_query
+    now = time.time()
+    if now - _last_timeout_query > 60.0:
+        _last_timeout_query = now
+        try:
+            out = subprocess.check_output(
+                'powercfg /query SCHEME_CURRENT SUB_VIDEO VIDEOIDLE',
+                text=True,
+                creationflags=0x08000000
+            )
+            m_ac = re.search(r'Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)', out)
+            m_dc = re.search(r'Current DC Power Setting Index:\s*0x([0-9a-fA-F]+)', out)
+            if m_ac:
+                val = int(m_ac.group(1), 16)
+                if val > 0:
+                    _cached_screen_timeout_ac = val
+            if m_dc:
+                val = int(m_dc.group(1), 16)
+                if val > 0:
+                    _cached_screen_timeout_dc = val
+        except Exception:
+            pass
+
+    try:
+        sps = SYSTEM_POWER_STATUS()
+        kernel32.GetSystemPowerStatus(ctypes.byref(sps))
+        is_ac = (sps.ACLineStatus == 1)
+    except Exception:
+        is_ac = True
+
+    return _cached_screen_timeout_ac if is_ac else _cached_screen_timeout_dc
+
 def is_workstation_locked() -> bool:
     """Accurately detects if Windows workstation is currently locked or display is turned off."""
     global _session_locked, _display_off
     if _session_locked or _display_off:
         return True
+
+    # 1. Inactivity check: if idle time exceeded display timeout, user stepped away and screen is locked/sleeping
+    idle = get_idle_seconds()
+    timeout = get_screen_timeout_seconds()
+    if idle >= timeout:
+        _session_locked = True
+        log(f"Inactivity timeout reached (idle: {idle:.1f}s >= timeout: {timeout}s) -> Workstation treated as LOCKED")
+        return True
+
+    # 2. Check input desktop (Winlogon desktop indicates lock screen)
     try:
         desk = user32.OpenInputDesktop(0, False, 0x01FF)
         if desk == 0:
+            _session_locked = True
             return True
         name_buf = ctypes.create_unicode_buffer(256)
         needed = wintypes.DWORD()
         user32.GetUserObjectInformationW(desk, 2, name_buf, ctypes.sizeof(name_buf), ctypes.byref(needed))
         user32.CloseDesktop(desk)
         if name_buf.value.lower() != 'default':
+            _session_locked = True
             return True
+        else:
+            if idle < 3.0:
+                _session_locked = False
+                _display_off = False
     except Exception:
         pass
     return False
@@ -1153,13 +1222,21 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
                 clock_state["clock_mode"] = False
                 paused_since = None
 
+            app_id = (ses.source_app_user_model_id or "").lower()
+            if "spotify" in app_id:
+                src_code = "S"
+            elif "chrome" in app_id:
+                src_code = "C"
+            else:
+                src_code = "M"
+
             t  = clean(props.title) if props else ""
             ar = clean(props.artist or props.album_artist or "") if props else ""
             al = clean(props.album_title or "") if props else ""
             if not ar:
-                ar = al or "Spotify"
+                ar = al or ("Chrome" if src_code == "C" else "Spotify")
 
-            track_key = f"{t}:::{ar}"
+            track_key = f"{src_code}:::{t}:::{ar}"
 
             # ── Track changed: trigger ONLY when title or artist actually changes ──
             if t and track_key != last_track_id:
@@ -1173,14 +1250,14 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
                     ar = clean(props.artist or props.album_artist or "") if props else ar
                     al = clean(props.album_title or "") if props else al
                     if not ar:
-                        ar = al or "Spotify"
+                        ar = al or ("Chrome" if src_code == "C" else "Spotify")
                     pos, dur, flag = compute_position(tl, status)
-                    track_key = f"{t}:::{ar}"
+                    track_key = f"{src_code}:::{t}:::{ar}"
                 except Exception:
                     pass
 
                 # Immediately send title, artist, duration, current position, and play/pause state!
-                song_cmd = f"#SONG:{t}|{ar}|{al}|{dur}|{pos}|{flag}\n"
+                song_cmd = f"#SONG:{t}|{ar}|{al}|{dur}|{pos}|{flag}|{src_code}\n"
                 ser.write(song_cmd.encode("ascii"))
                 await asyncio.sleep(0.04)
 
