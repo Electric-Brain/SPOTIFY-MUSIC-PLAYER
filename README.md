@@ -145,12 +145,11 @@ SPOTIFY-MUSIC-PLAYER/
 ├── music_display.ino      # Arduino sketch (MCUFRIEND TFT rendering, sleek UI, live quartz clock)
 ├── now_playing.py         # Python Windows Media controller, power/lock monitor & RGB565 streamer
 ├── requirements.txt       # Python package dependencies (winrt, pycaw, pyserial, pillow)
-├── start_display.bat      # One-click manual background launcher
-├── start_hidden.vbs       # Zero-window silent VBScript launcher
+├── start_display.bat      # One-click background launcher
 ├── stop_display.bat       # Stops the background service and frees the serial COM port
-├── .gitignore             # Git ignore file for Python and Arduino artifacts
+├── .gitignore             # Git ignore rules
 ├── LICENSE                # MIT License
-└── README.md              # Project documentation
+└── README.md              # Documentation & setup guide
 ```
 
 ---
