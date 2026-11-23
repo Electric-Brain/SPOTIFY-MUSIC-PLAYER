@@ -1038,17 +1038,26 @@ def get_chrome_cover_rgb565() -> bytes:
     global _cached_chrome_cover
     if _cached_chrome_cover is not None:
         return _cached_chrome_cover
+
+    raw_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chrome_cover_200.raw")
+    if os.path.exists(raw_path) and os.path.getsize(raw_path) == 80000:
+        try:
+            with open(raw_path, "rb") as f:
+                _cached_chrome_cover = f.read()
+            return _cached_chrome_cover
+        except Exception:
+            pass
+
     try:
-        from PIL import ImageDraw
         size = 200
-        im = Image.new('RGB', (size, size), (24, 24, 28))
-        d = ImageDraw.Draw(im)
-        cx, cy, r = 100, 100, 68
-        d.pieslice([cx - r, cy - r, cx + r, cy + r], start=210, end=330, fill=(234, 67, 53))   # Red
-        d.pieslice([cx - r, cy - r, cx + r, cy + r], start=330, end=90, fill=(251, 188, 5))    # Yellow
-        d.pieslice([cx - r, cy - r, cx + r, cy + r], start=90, end=210, fill=(52, 168, 83))    # Green
-        d.ellipse([cx - 32, cy - 32, cx + 32, cy + 32], fill=(255, 255, 255))                  # White ring
-        d.ellipse([cx - 24, cy - 24, cx + 24, cy + 24], fill=(66, 133, 244))                  # Blue pupil
+        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "official_chrome.png")
+        if os.path.exists(logo_path):
+            src = Image.open(logo_path).convert("RGBA")
+            im = Image.new("RGB", (size, size), (0, 0, 0))
+            logo = src.resize((150, 150), Image.Resampling.LANCZOS)
+            im.paste(logo, ((size - 150) // 2, (size - 150) // 2), logo)
+        else:
+            im = Image.new("RGB", (size, size), (0, 0, 0))
 
         raw = bytearray(size * size * 2)
         idx = 0
