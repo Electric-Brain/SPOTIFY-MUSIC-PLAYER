@@ -945,6 +945,10 @@ void handleClock(char *payload) {
   int dLen = strlen(p[2]);
   if (dLen < 4 || dLen > 24) return;
 
+  if (currentMode != MODE_CLOCK) {
+    setupClockLayout();
+  }
+
   state = 'S'; // Stop any ongoing music counter
 
   // Sync internal clock components for autonomous second ticking

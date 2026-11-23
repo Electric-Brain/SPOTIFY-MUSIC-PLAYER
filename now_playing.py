@@ -602,6 +602,18 @@ async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
                             set_system_volume(vol)
                         except ValueError:
                             pass
+                    elif line == "#READY":
+                        log("Arduino sent #READY handshake")
+                        if not is_workstation_locked():
+                            try:
+                                ser.write(b"#UNLOCK\n")
+                                log("Workstation unlocked -> sent #UNLOCK on #READY")
+                                await asyncio.sleep(0.4)
+                                state_tracker["clock_mode"] = True
+                                state_tracker["last_sys_sent"] = 0.0
+                                send_clock_dashboard(ser, state_tracker)
+                            except Exception:
+                                pass
         except Exception:
             pass
         await asyncio.sleep(0.015)
@@ -899,6 +911,7 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
         try:
             ser.write(b"#UNLOCK\n")
             log("Workstation is unlocked at startup -> sent #UNLOCK to display")
+            await asyncio.sleep(0.4)
         except Exception:
             pass
         clock_state["clock_mode"] = True
@@ -925,6 +938,7 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
                 try:
                     ser.write(b"#UNLOCK\n")
                     log("Workstation unlocked -> sent #UNLOCK to display")
+                    await asyncio.sleep(0.4)
                 except Exception:
                     pass
                 clock_state["clock_mode"] = True
@@ -1079,8 +1093,7 @@ async def main():
         return
 
     log(f"Service started (PID {os.getpid()})")
-    # Grace period on boot for Windows audio, WinRT, and USB drivers to initialize
-    await asyncio.sleep(2.0)
+    await asyncio.sleep(0.2)
     init_volume()
 
     mgr = await get_session_manager_safe()
@@ -1090,7 +1103,7 @@ async def main():
     while True:
         target_port = find_arduino_port()
         if not target_port:
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(1.0)
             continue
         ser = None
         try:
@@ -1102,22 +1115,10 @@ async def main():
             ser.dtr = False  # Avoid asserting DTR (prevents Arduino Uno hardware reset!)
             ser.rts = False
             ser.open()
-            # Wait for Arduino to finish boot animation + setup (~1.5s)
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(0.2)
             ser.reset_input_buffer()
             ser.reset_output_buffer()
-            # Wait for #READY handshake from Arduino
-            ready_deadline = time.time() + 3.0
-            got_ready = False
-            while time.time() < ready_deadline:
-                if ser.in_waiting > 0:
-                    raw = ser.read(ser.in_waiting).decode("ascii", errors="ignore")
-                    if "#READY" in raw:
-                        got_ready = True
-                        break
-                await asyncio.sleep(0.05)
-            ser.reset_input_buffer()
-            log(f"Serial connected to {target_port} (ready_handshake={got_ready})")
+            log(f"Serial connected to {target_port}")
             if mgr is None:
                 mgr = await get_session_manager_safe()
             await run_playback_loop(ser, mgr, notif_listener, initial_notif_id)
