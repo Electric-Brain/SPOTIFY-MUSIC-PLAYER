@@ -57,14 +57,21 @@ const unsigned char PROGMEM logo24[] = {
   0x0F, 0xFF, 0xF0, 0x07, 0xFF, 0xE0, 0x03, 0xFF, 0xC0, 0x00, 0x7E, 0x00
 };
 
-// ---------- Sharp 24x24 Chrome Logo Bitmap (PROGMEM) ----------
-const unsigned char PROGMEM logoChrome24[] = {
-  0x00, 0x00, 0x00, 0x00, 0x7E, 0x00, 0x01, 0xFF, 0x80, 0x07, 0xFF, 0xE0,
-  0x0F, 0xFF, 0xF0, 0x1F, 0xFF, 0xF8, 0x07, 0xFF, 0xF8, 0x3B, 0xC0, 0x00,
-  0x3C, 0x81, 0xFC, 0x7F, 0x18, 0xFE, 0x7E, 0x3C, 0x7E, 0x7E, 0x7E, 0x7E,
-  0x7E, 0x7E, 0x7E, 0x7E, 0x3C, 0x7E, 0x7F, 0x18, 0xFE, 0x3F, 0x81, 0xFC,
-  0x3F, 0xC3, 0xFC, 0x1F, 0xF7, 0xF8, 0x1F, 0xEF, 0xF8, 0x0F, 0xEF, 0xF0,
-  0x07, 0xDF, 0xE0, 0x01, 0xDF, 0x80, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00
+// ---------- 24x24 Chrome Multi-Color 2-Bit Palette Bitmap (PROGMEM) ----------
+// 1 = Red, 2 = Yellow, 3 = Green (Center White ring and Blue pupil drawn dynamically)
+const unsigned char PROGMEM chromeColors24[] = {
+  0x00, 0x00, 0x55, 0x54, 0x00, 0x00, 0x00, 0x05, 0x55, 0x55, 0x40, 0x00,
+  0x00, 0x15, 0x55, 0x55, 0x50, 0x00, 0x01, 0x55, 0x55, 0x55, 0x55, 0x00,
+  0x01, 0x55, 0x55, 0x55, 0x55, 0x00, 0x05, 0x55, 0x55, 0x55, 0x55, 0x40,
+  0x3D, 0x55, 0x55, 0x55, 0x56, 0xA0, 0x3F, 0xD5, 0x55, 0x55, 0x5A, 0xA0,
+  0xFF, 0xFD, 0x55, 0x55, 0xAA, 0xA8, 0xFF, 0xFF, 0x55, 0x5A, 0xAA, 0xA8,
+  0xFF, 0xFF, 0xF5, 0xAA, 0xAA, 0xA8, 0xFF, 0xFF, 0xFF, 0xAA, 0xAA, 0xA8,
+  0xFF, 0xFF, 0xFF, 0xAA, 0xAA, 0xA8, 0xFF, 0xFF, 0xFF, 0xAA, 0xAA, 0xA8,
+  0xFF, 0xFF, 0xFF, 0xAA, 0xAA, 0xA8, 0x3F, 0xFF, 0xFF, 0xAA, 0xAA, 0xA0,
+  0x3F, 0xFF, 0xFF, 0xAA, 0xAA, 0xA0, 0x0F, 0xFF, 0xFF, 0xAA, 0xAA, 0x80,
+  0x03, 0xFF, 0xFF, 0xAA, 0xAA, 0x00, 0x03, 0xFF, 0xFF, 0xAA, 0xAA, 0x00,
+  0x00, 0x3F, 0xFF, 0xAA, 0xA0, 0x00, 0x00, 0x0F, 0xFF, 0xAA, 0x80, 0x00,
+  0x00, 0x00, 0xFF, 0xA8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
 // ---------- Display Modes ----------
@@ -191,13 +198,31 @@ void printCleanText(int x, int y, const char *src, int maxCh, uint16_t fg, int s
   tft.print(buf);
 }
 
+void drawChromeIcon24(int x, int y) {
+  const uint16_t pal[4] = { COL_BG, 0xF9A0, 0xFFE0, 0x07E0 };
+  int idx = 0;
+  for (int py = 0; py < 24; py++) {
+    for (int bx = 0; bx < 6; bx++) {
+      uint8_t b = pgm_read_byte(&chromeColors24[idx++]);
+      for (int p = 0; p < 4; p++) {
+        uint8_t c = (b >> (6 - p * 2)) & 0x03;
+        if (c != 0) {
+          tft.drawPixel(x + bx * 4 + p, y + py, pal[c]);
+        }
+      }
+    }
+  }
+  tft.fillCircle(x + 11, y + 11, 5, COL_WHITE);
+  tft.fillCircle(x + 11, y + 11, 3, 0x443F);
+}
+
 char currentAppSource = ' ';
 
 void drawHeader(char appCode = 'S') {
   currentAppSource = appCode;
   tft.fillRect(0, 0, 240, HDR_H, COL_BG);
   if (appCode == 'C') {
-    tft.drawBitmap(8, 2, logoChrome24, 24, 24, 0xFFE0, COL_BG);
+    drawChromeIcon24(8, 2);
   } else {
     tft.drawBitmap(8, 2, logo24, 24, 24, COL_GREEN, COL_BG);
   }
@@ -503,15 +528,33 @@ void drawNotificationCard(const char *app, const char *msg) {
   appBuf[15] = 0;
   tft.print(appBuf);
 
-  // Notification message with clean word-wrapping across up to 10 lines
-  tft.setTextSize(1);
+  // Dynamic font sizing based on message length
+  int msgLen = strlen(msg);
+  int txtSize = 1;
+  int maxCharsPerLine = 35;
+  int lineSpacing = 11;
+  int maxLines = 10;
+  int lineY = NOTIF_CARD_Y + 30;
+
+  if (msgLen <= 26) {
+    txtSize = 3;
+    maxCharsPerLine = 11;
+    lineSpacing = 26;
+    maxLines = 4;
+    lineY = NOTIF_CARD_Y + 36;
+  } else if (msgLen <= 70) {
+    txtSize = 2;
+    maxCharsPerLine = 17;
+    lineSpacing = 18;
+    maxLines = 5;
+    lineY = NOTIF_CARD_Y + 33;
+  }
+
+  tft.setTextSize(txtSize);
   tft.setTextColor(COL_WHITE, COL_CARD);
 
   int lineX = 14;
-  int lineY = NOTIF_CARD_Y + 30;
-  int maxCharsPerLine = 35;
   int lineCount = 0;
-  int maxLines = 10;
 
   const char *p = msg;
   while (*p && lineCount < maxLines) {
@@ -542,7 +585,7 @@ void drawNotificationCard(const char *app, const char *msg) {
     for (int i = 0; i < printLen; i++) {
       tft.write(lineStart[i]);
     }
-    lineY += 11;
+    lineY += lineSpacing;
     lineCount++;
   }
 
@@ -566,74 +609,123 @@ void clearNotificationCard() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  ANIMATED KAWAII WATER REMINDER (12-SEC POP-UP EVERY 30 MIN)
+//  FULL-SCREEN ANIMATED WATER HYDRATION (10-SEC ACTING EVERY 30 MIN)
 // ═══════════════════════════════════════════════════════════════════
-
-#define WATER_CARD_Y 218
-#define WATER_CARD_H 94
 
 unsigned long waterLastAlert = 0;
 bool          waterActive    = false;
-unsigned long waterExpireAt  = 0;
-unsigned long lastBlinkTime  = 0;
-bool          eyesClosed     = false;
+unsigned long waterStartAt   = 0;
+int           prevCharX      = -1;
+int           lastWaterPhase = -1;
 
-void drawWaterDroplet(int cx, int cy, bool blink) {
-  tft.fillTriangle(cx, cy - 24, cx - 14, cy, cx + 14, cy, 0x07FF);
-  tft.fillCircle(cx, cy, 14, 0x07FF);
-  tft.drawPixel(cx - 6, cy - 11, COL_WHITE);
-  tft.drawPixel(cx - 5, cy - 12, COL_WHITE);
+void drawCharActor(int x, int pose, int frame) { return;
+  if (prevCharX >= 0 && prevCharX != x) {
+    tft.fillRect(prevCharX - 16, 138, 44, 92, COL_BG);
+  }
+  prevCharX = x;
 
-  tft.fillCircle(cx - 9, cy + 4, 2, 0xFA14);
-  tft.fillCircle(cx + 9, cy + 4, 2, 0xFA14);
-
-  if (blink) {
-    tft.fillRect(cx - 8, cy - 2, 16, 5, 0x07FF);
-    tft.drawFastHLine(cx - 6, cy, 4, COL_WHITE);
-    tft.drawFastHLine(cx + 2, cy, 4, COL_WHITE);
+  // Head: cute face (radius 12 at y=156)
+  tft.fillCircle(x, 156, 12, 0xFFE0);
+  if (pose == 2) {
+    // Drinking: eyes closed happy
+    tft.drawFastHLine(x - 5, 154, 4, COL_BG);
+    tft.drawFastHLine(x + 1, 154, 4, COL_BG);
+  } else if (pose == 3) {
+    // Refreshed smile & wink
+    tft.fillCircle(x - 4, 154, 2, COL_BG);
+    tft.drawFastHLine(x + 1, 154, 4, COL_BG);
+    tft.drawFastHLine(x - 3, 161, 7, COL_BG);
   } else {
-    tft.fillCircle(cx - 5, cy, 2, COL_WHITE);
-    tft.fillCircle(cx + 5, cy, 2, COL_WHITE);
-    tft.drawPixel(cx - 5, cy, COL_BG);
-    tft.drawPixel(cx + 5, cy, COL_BG);
+    // Normal walking / standing
+    tft.fillCircle(x - 4, 154, 2, COL_BG);
+    tft.fillCircle(x + 4, 154, 2, COL_BG);
+    tft.drawFastHLine(x - 2, 161, 5, COL_BG);
   }
 
-  tft.drawPixel(cx - 2, cy + 6, COL_WHITE);
-  tft.drawPixel(cx - 1, cy + 7, COL_WHITE);
-  tft.drawPixel(cx,     cy + 7, COL_WHITE);
-  tft.drawPixel(cx + 1, cy + 7, COL_WHITE);
-  tft.drawPixel(cx + 2, cy + 6, COL_WHITE);
+  // Body: green hoodie
+  tft.fillRoundRect(x - 8, 170, 16, 32, 4, COL_GREEN);
+
+  // Legs & Arms
+  if (pose == 0) {
+    // Walking
+    int l1 = (frame == 0) ? 26 : 20;
+    int l2 = (frame == 0) ? 20 : 26;
+    tft.fillRect(x - 6, 202, 4, l1, COL_WHITE);
+    tft.fillRect(x + 2, 202, 4, l2, COL_WHITE);
+    int ay = (frame == 0) ? 174 : 182;
+    tft.fillRect(x - 11, ay, 3, 12, COL_WHITE);
+    tft.fillRect(x + 8, (frame == 0) ? 182 : 174, 3, 12, COL_WHITE);
+  } else if (pose == 1) {
+    // Reaching for bottle on table
+    tft.fillRect(x - 6, 202, 4, 26, COL_WHITE);
+    tft.fillRect(x + 2, 202, 4, 26, COL_WHITE);
+    tft.fillRect(x - 10, 176, 3, 14, COL_WHITE);
+    tft.fillRect(x + 8, 172, 14, 4, COL_WHITE);
+  } else if (pose == 2) {
+    // Drinking bottle!
+    tft.fillRect(x - 6, 202, 4, 26, COL_WHITE);
+    tft.fillRect(x + 2, 202, 4, 26, COL_WHITE);
+    tft.fillRoundRect(x + 6, 146, 16, 12, 3, 0x07FF);
+    tft.fillRect(x + 2, 149, 4, 5, COL_WHITE);
+    tft.fillRect(x + 8, 158, 4, 16, COL_WHITE);
+    if (frame % 2 == 0) {
+      tft.fillCircle(x + 10, 168, 2, 0x07FF);
+    } else {
+      tft.fillCircle(x + 10, 168, 2, COL_BG);
+    }
+  } else if (pose == 3) {
+    // Refreshed: Waving hand & holding bottle
+    tft.fillRect(x - 6, 202, 4, 26, COL_WHITE);
+    tft.fillRect(x + 2, 202, 4, 26, COL_WHITE);
+    int wy = (frame == 0) ? 142 : 148;
+    tft.fillRect(x - 10, 172, 3, 10, COL_WHITE);
+    tft.fillCircle(x - 12, wy, 3, 0xFFE0);
+    tft.fillRect(x + 8, 174, 3, 14, COL_WHITE);
+    tft.fillRoundRect(x + 9, 180, 8, 16, 2, 0x07FF);
+  }
 }
 
-void drawWaterCard() {
-  tft.fillRoundRect(8, WATER_CARD_Y, 224, WATER_CARD_H, 6, COL_CARD);
-  tft.drawRoundRect(8, WATER_CARD_Y, 224, WATER_CARD_H, 6, 0x07FF);
-  drawWaterDroplet(38, WATER_CARD_Y + 44, false);
+void startWaterAnimation() {
+  waterActive = true;
+  waterStartAt = millis();
+  prevCharX = -1;
+  lastWaterPhase = -1;
 
+  tft.fillScreen(COL_BG);
+
+  // Top header text
   tft.setTextSize(2);
-  tft.setTextColor(0x07FF, COL_CARD);
-  tft.setCursor(66, WATER_CARD_Y + 14);
-  tft.print(F("HYDRATE!"));
+  tft.setTextColor(0x07FF, COL_BG);
+  tft.setCursor(38, 20);
+  tft.print(F("STAY HYDRATED!"));
 
   tft.setTextSize(1);
-  tft.setTextColor(0xFFE0, COL_CARD);
-  tft.setCursor(66, WATER_CARD_Y + 38);
-  tft.print(F("Time to drink water!"));
+  tft.setTextColor(COL_WHITE, COL_BG);
+  tft.setCursor(52, 46);
+  tft.print(F("* Time to drink water *"));
 
-  tft.setTextColor(COL_GREEN, COL_CARD);
-  tft.setCursor(66, WATER_CARD_Y + 54);
-  tft.print(F("* Take a sip now! 💧 *"));
+  // Floor line at y=228
+  tft.drawFastHLine(10, 228, 220, 0x07FF);
 
-  // 12-second countdown bar
-  tft.drawRoundRect(66, WATER_CARD_Y + 72, 150, 4, 2, COL_TRACK);
-  tft.fillRoundRect(66, WATER_CARD_Y + 72, 150, 4, 2, 0x07FF);
+  // Table at x=136
+  tft.drawFastHLine(130, 200, 32, COL_WHITE);
+  tft.fillRect(142, 201, 8, 27, COL_CARD);
+
+  // Bottle on table
+  tft.fillRoundRect(140, 176, 12, 24, 3, 0x07FF);
+  tft.fillRect(143, 172, 6, 4, COL_WHITE);
+
+  // Progress bar background at bottom
+  tft.drawRoundRect(20, 265, 200, 6, 3, COL_TRACK);
 }
 
 void clearWaterCard() {
   if (!waterActive) return;
-  tft.fillRect(8, WATER_CARD_Y, 224, WATER_CARD_H + 2, COL_BG);
   waterActive = false;
   waterLastAlert = millis();
+  prevCharX = -1;
+  lastWaterPhase = -1;
+  setupClockLayout();
 }
 
 void updateWaterAnimation() {
@@ -642,42 +734,73 @@ void updateWaterAnimation() {
   unsigned long now = millis();
   const unsigned long interval = 30UL * 60UL * 1000UL; // 30 minutes
 
-  // Trigger pop-up every 30 minutes if no notification is showing
+  // Trigger every 30 minutes if idle / no notification
   if (!waterActive && !notifActive) {
     if (now - waterLastAlert >= interval) {
-      waterActive   = true;
-      waterExpireAt = now + 12000; // Visible for 12 seconds
-      drawWaterCard();
-      lastBlinkTime = now;
-      eyesClosed    = false;
+      startWaterAnimation();
     }
   }
 
-  // Active animation while pop-up is showing
-  if (waterActive) {
-    if (notifActive || now > waterExpireAt) {
-      clearWaterCard();
-      return;
-    }
+  if (!waterActive) return;
 
-    // Eye blink every 2.5s
-    if (!eyesClosed && (now - lastBlinkTime > 2500)) {
-      drawWaterDroplet(38, WATER_CARD_Y + 44, true);
-      eyesClosed = true;
-      lastBlinkTime = now;
-    } else if (eyesClosed && (now - lastBlinkTime > 150)) {
-      drawWaterDroplet(38, WATER_CARD_Y + 44, false);
-      eyesClosed = false;
-      lastBlinkTime = now;
-    }
+  unsigned long elapsed = now - waterStartAt;
+  if (notifActive || elapsed >= 10000) {
+    clearWaterCard();
+    return;
+  }
 
-    // Shrinking countdown bar
-    long rem = waterExpireAt - now;
-    if (rem < 0) rem = 0;
-    int curW = (int)((rem * 150L) / 12000L);
-    if (curW < 150) {
-      tft.fillRect(66 + curW, WATER_CARD_Y + 72, 150 - curW, 4, COL_TRACK);
+  // Bottom 10-second progress bar
+  int progW = (int)((elapsed * 196L) / 10000L);
+  if (progW > 196) progW = 196;
+  tft.fillRoundRect(22, 266, progW, 4, 2, 0x07FF);
+
+  // Phase logic
+  if (elapsed < 2800) {
+    // Phase 1: Walk in from left to table (x: 20 -> 110)
+    int cx = 20 + (int)((elapsed * 90L) / 2800L);
+    int step = (elapsed / 140) % 2;
+    drawCharActor(cx, 0, step);
+    lastWaterPhase = 1;
+  }
+  else if (elapsed < 4000) {
+    // Phase 2: Reach for bottle
+    if (lastWaterPhase != 2) {
+      tft.fillRect(140, 172, 14, 28, COL_BG);
+      lastWaterPhase = 2;
     }
+    drawCharActor(110, 1, 0);
+  }
+  else if (elapsed < 7200) {
+    // Phase 3: Drink water with gulp bubbles!
+    if (lastWaterPhase != 3) {
+      tft.setTextSize(2);
+      tft.setTextColor(0x07FF, COL_BG);
+      tft.setCursor(80, 85);
+      tft.print(F("GULP! 💧"));
+      lastWaterPhase = 3;
+    }
+    int sipFrame = (elapsed / 250) % 2;
+    drawCharActor(110, 2, sipFrame);
+  }
+  else if (elapsed < 8500) {
+    // Phase 4: Refreshed smile & wave!
+    if (lastWaterPhase != 4) {
+      tft.fillRect(70, 85, 110, 20, COL_BG);
+      tft.setTextSize(2);
+      tft.setTextColor(COL_GREEN, COL_BG);
+      tft.setCursor(55, 85);
+      tft.print(F("FEEL GREAT!"));
+      lastWaterPhase = 4;
+    }
+    int waveFrame = (elapsed / 180) % 2;
+    drawCharActor(110, 3, waveFrame);
+  }
+  else {
+    // Phase 5: Walk off to the right (x: 110 -> 215)
+    int cx = 110 + (int)(((elapsed - 8500) * 105L) / 1500L);
+    int step = (elapsed / 140) % 2;
+    drawCharActor(cx, 0, step);
+    lastWaterPhase = 5;
   }
 }
 
@@ -1077,7 +1200,7 @@ void parseCommand(char *cmd) {
   else if (strcmp(cmd, "#NOIMG") == 0) {
     tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_SURFACE);
     if (currentAppSource == 'C') {
-      tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logoChrome24, 24, 24, 0xFFE0, COL_SURFACE);
+      drawChromeIcon24(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2);
     } else {
       tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logo24, 24, 24, COL_GREEN, COL_SURFACE);
     }
@@ -1265,34 +1388,11 @@ void updateWaitPcAnimation() {
 
 void playBootAnimation() {
   tft.fillScreen(COL_BG);
-
-  // ── 1. Sleek Minimalist Laptop (Apple / Google hardware aesthetic) ──
-  tft.drawRoundRect(88, 72, 64, 42, 3, COL_WHITE);
-  tft.fillRoundRect(90, 74, 60, 38, 2, COL_SURFACE);
-  tft.fillCircle(120, 76, 1, COL_GREEN);        // ambient camera dot
-  tft.fillRect(78, 114, 84, 4, COL_WHITE);       // unibody base
-  tft.fillRect(112, 114, 16, 2, COL_SURFACE);    // trackpad groove
-  delay(180);
-
-  // ── 2. Clean Typography ──
   tft.setTextSize(2);
   tft.setTextColor(COL_WHITE, COL_BG);
   tft.setCursor(62, 142);
   tft.print(F("SMART DECK"));
-
-  tft.setTextSize(1);
-  tft.setTextColor(COL_GRAY_MD, COL_BG);
-  tft.setCursor(76, 168);
-  tft.print(F("DESK COMPANION"));
-
-  // ── 3. Smooth macOS-style minimal progress bar ──
-  tft.drawRoundRect(45, 196, 150, 4, 2, COL_TRACK);
-  for (int w = 0; w <= 146; w += 4) {
-    tft.fillRoundRect(47, 197, w, 2, 1, COL_WHITE);
-    delay(16);
-  }
-
-  delay(350);
+  delay(150);
 }
 
 void setup() {
@@ -1334,6 +1434,7 @@ void loop() {
       clearNotificationCard();
     }
     updateWaterAnimation();
+    if (waterActive) return;
 
     // Autonomous precision quartz ticker: advances seconds every 1000ms live
     if (clockSynced && (millis() - clkLastTick >= 1000)) {

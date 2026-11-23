@@ -993,6 +993,68 @@ async def extract_cover_safe() -> bytes | None:
     except Exception:
         return None
 
+_cached_chrome_cover = None
+_cached_spotify_cover = None
+
+def get_chrome_cover_rgb565() -> bytes:
+    global _cached_chrome_cover
+    if _cached_chrome_cover is not None:
+        return _cached_chrome_cover
+    try:
+        from PIL import ImageDraw
+        size = 200
+        im = Image.new('RGB', (size, size), (24, 24, 28))
+        d = ImageDraw.Draw(im)
+        cx, cy, r = 100, 100, 68
+        d.pieslice([cx - r, cy - r, cx + r, cy + r], start=210, end=330, fill=(234, 67, 53))   # Red
+        d.pieslice([cx - r, cy - r, cx + r, cy + r], start=330, end=90, fill=(251, 188, 5))    # Yellow
+        d.pieslice([cx - r, cy - r, cx + r, cy + r], start=90, end=210, fill=(52, 168, 83))    # Green
+        d.ellipse([cx - 32, cy - 32, cx + 32, cy + 32], fill=(255, 255, 255))                  # White ring
+        d.ellipse([cx - 24, cy - 24, cx + 24, cy + 24], fill=(66, 133, 244))                  # Blue pupil
+
+        raw = bytearray(size * size * 2)
+        idx = 0
+        for y in range(size):
+            for x in range(size):
+                r_c, g_c, b_c = im.getpixel((x, y))
+                c = ((r_c & 0xF8) << 8) | ((g_c & 0xFC) << 3) | (b_c >> 3)
+                raw[idx]     = c & 0xFF
+                raw[idx + 1] = (c >> 8) & 0xFF
+                idx += 2
+        _cached_chrome_cover = bytes(raw)
+    except Exception:
+        _cached_chrome_cover = b""
+    return _cached_chrome_cover
+
+def get_spotify_cover_rgb565() -> bytes:
+    global _cached_spotify_cover
+    if _cached_spotify_cover is not None:
+        return _cached_spotify_cover
+    try:
+        from PIL import ImageDraw
+        size = 200
+        im = Image.new('RGB', (size, size), (24, 24, 28))
+        d = ImageDraw.Draw(im)
+        cx, cy, r = 100, 100, 68
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(30, 215, 96)) # Spotify Green
+        d.arc([cx - 45, cy - 35, cx + 45, cy + 55], start=205, end=335, fill=(24, 24, 28), width=8)
+        d.arc([cx - 38, cy - 22, cx + 38, cy + 58], start=208, end=332, fill=(24, 24, 28), width=7)
+        d.arc([cx - 30, cy - 10, cx + 30, cy + 60], start=210, end=330, fill=(24, 24, 28), width=6)
+
+        raw = bytearray(size * size * 2)
+        idx = 0
+        for y in range(size):
+            for x in range(size):
+                r_c, g_c, b_c = im.getpixel((x, y))
+                c = ((r_c & 0xF8) << 8) | ((g_c & 0xFC) << 3) | (b_c >> 3)
+                raw[idx]     = c & 0xFF
+                raw[idx + 1] = (c >> 8) & 0xFF
+                idx += 2
+        _cached_spotify_cover = bytes(raw)
+    except Exception:
+        _cached_spotify_cover = b""
+    return _cached_spotify_cover
+
 
 async def send_cover_async(ser: serial.Serial, img_bytes: bytes, ses, active_track_key: str) -> bool:
     """Stream 200 rows with active mid-stream skip detection and live volume control."""
@@ -1263,6 +1325,12 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
 
                 # Stream cover with active mid-stream abort check
                 cover = await extract_cover_safe()
+                if not cover:
+                    if src_code == "C":
+                        cover = get_chrome_cover_rgb565()
+                    else:
+                        cover = get_spotify_cover_rgb565()
+
                 if cover:
                     clock_state["streaming_cover"] = True
                     try:
