@@ -619,16 +619,111 @@ async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
         await asyncio.sleep(0.015)
 
 
-def is_workstation_locked() -> bool:
-    """Detects if Windows is currently locked or at the password login screen."""
+# ═══════════════════════════════════════════════════════════════════
+#   WINDOWS WORKSTATION LOCK / UNLOCK EVENT MONITOR
+# ═══════════════════════════════════════════════════════════════════
+
+_session_locked = False
+_session_monitor_started = False
+
+user32 = ctypes.windll.user32
+wtsapi32 = ctypes.windll.wtsapi32
+kernel32 = ctypes.windll.kernel32
+
+LRESULT = ctypes.c_ssize_t
+WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM)
+user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.DefWindowProcW.restype = LRESULT
+
+WM_WTSSESSION_CHANGE = 0x02B1
+WTS_SESSION_LOCK     = 0x7
+WTS_SESSION_UNLOCK   = 0x8
+
+class WNDCLASSW(ctypes.Structure):
+    _fields_ = [
+        ('style', wintypes.UINT),
+        ('lpfnWndProc', WNDPROC),
+        ('cbClsExtra', ctypes.c_int),
+        ('cbWndExtra', ctypes.c_int),
+        ('hInstance', wintypes.HINSTANCE),
+        ('hIcon', wintypes.HICON),
+        ('hCursor', wintypes.HICON),
+        ('hbrBackground', wintypes.HBRUSH),
+        ('lpszMenuName', wintypes.LPCWSTR),
+        ('lpszClassName', wintypes.LPCWSTR),
+    ]
+
+_proc_ref = None  # Keep strong reference to prevent GC callback crash
+
+def _session_wnd_proc(hwnd, msg, wparam, lparam):
+    global _session_locked
+    if msg == WM_WTSSESSION_CHANGE:
+        if wparam == WTS_SESSION_LOCK:
+            _session_locked = True
+            log("Session Event: Workstation LOCKED (WTS_SESSION_LOCK)")
+        elif wparam == WTS_SESSION_UNLOCK:
+            _session_locked = False
+            log("Session Event: Workstation UNLOCKED (WTS_SESSION_UNLOCK)")
+    return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+def start_session_lock_monitor():
+    global _session_monitor_started, _proc_ref, _session_locked
+    if _session_monitor_started:
+        return
+    _session_monitor_started = True
+
+    # Detect initial state
     try:
-        desk = ctypes.windll.user32.OpenInputDesktop(0, False, 0x01FF)
+        desk = user32.OpenInputDesktop(0, False, 0x01FF)
+        if desk == 0:
+            _session_locked = True
+        else:
+            name_buf = ctypes.create_unicode_buffer(256)
+            needed = wintypes.DWORD()
+            user32.GetUserObjectInformationW(desk, 2, name_buf, ctypes.sizeof(name_buf), ctypes.byref(needed))
+            user32.CloseDesktop(desk)
+            if name_buf.value.lower() != 'default':
+                _session_locked = True
+    except Exception:
+        pass
+
+    def worker():
+        global _proc_ref
+        _proc_ref = WNDPROC(_session_wnd_proc)
+        wc = WNDCLASSW()
+        wc.lpfnWndProc = _proc_ref
+        wc.lpszClassName = 'SpotifyDeck_SessionNotifier'
+        wc.hInstance = kernel32.GetModuleHandleW(None)
+        user32.RegisterClassW(ctypes.byref(wc))
+        hwnd = user32.CreateWindowExW(0, wc.lpszClassName, 'SpotifyDeck_Session', 0, 0, 0, 0, 0, 0, 0, wc.hInstance, 0)
+        wtsapi32.WTSRegisterSessionNotification(hwnd, 0)
+
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+    t = threading.Thread(target=worker, daemon=True, name='SessionLockMonitor')
+    t.start()
+
+def is_workstation_locked() -> bool:
+    """Accurately detects if Windows workstation is currently locked."""
+    global _session_locked
+    if _session_locked:
+        return True
+    try:
+        desk = user32.OpenInputDesktop(0, False, 0x01FF)
         if desk == 0:
             return True
-        ctypes.windll.user32.CloseDesktop(desk)
-        return False
+        name_buf = ctypes.create_unicode_buffer(256)
+        needed = wintypes.DWORD()
+        user32.GetUserObjectInformationW(desk, 2, name_buf, ctypes.sizeof(name_buf), ctypes.byref(needed))
+        user32.CloseDesktop(desk)
+        if name_buf.value.lower() != 'default':
+            return True
     except Exception:
-        return False
+        pass
+    return False
 
 
 def find_arduino_port() -> str | None:
@@ -1092,6 +1187,7 @@ async def main():
         # Another instance is already running! Exit silently.
         return
 
+    start_session_lock_monitor()
     log(f"Service started (PID {os.getpid()})")
     await asyncio.sleep(0.2)
     init_volume()

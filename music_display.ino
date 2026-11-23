@@ -307,6 +307,9 @@ void renderClockDigits(const char *curDigits) {
 }
 
 void renderClock(const char *tStr, const char *ampm, const char *dStr) {
+  if (currentMode == MODE_WAIT_PC) {
+    return;
+  }
   if (currentMode != MODE_CLOCK) {
     setupClockLayout();
   }
@@ -944,6 +947,10 @@ void handleClock(char *payload) {
   // Validate Date string length (must be reasonable)
   int dLen = strlen(p[2]);
   if (dLen < 4 || dLen > 24) return;
+
+  if (currentMode == MODE_WAIT_PC) {
+    return;
+  }
 
   if (currentMode != MODE_CLOCK) {
     setupClockLayout();
