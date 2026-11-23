@@ -906,9 +906,17 @@ async def send_cover_async(ser: serial.Serial, img_bytes: bytes, ses, active_tra
 
     row_bytes = ART_SIZE * 2
     for r in range(ART_SIZE):
-        # Every 6 rows (~80ms), check if user skipped song in Spotify
+        # Every 6 rows (~80ms), check if user skipped or paused song in Spotify
         if r % 6 == 0 and ses:
             try:
+                cur_info = ses.get_playback_info()
+                if cur_info and cur_info.playback_status != PlayStatus.PLAYING:
+                    # User paused! Abort cover stream immediately
+                    ser.write(b"#A\x00")
+                    await asyncio.sleep(0.02)
+                    ser.reset_input_buffer()
+                    return False
+
                 cur_props = await ses.try_get_media_properties_async()
                 if cur_props:
                     ct = clean(cur_props.title)
@@ -1064,36 +1072,19 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
 
             pos, dur, flag = compute_position(tl, status)
 
-            # ── If music is not playing ──
+            # ── If music is not playing -> Instantly switch to Main Display (Clock Mode) ──
             if status != PlayStatus.PLAYING:
-                # If we were in Clock mode (or just connected), STAY in Clock mode!
-                if clock_state["clock_mode"] or not last_track_id:
-                    clock_state["clock_mode"] = True
-                    send_clock_dashboard(ser, clock_state)
-                    now = datetime.now()
-                    ms_left = (1_000_000 - now.microsecond) / 1_000_000.0
-                    await asyncio.sleep(max(0.05, ms_left))
-                    continue
-
-                # If music was playing on screen and just got paused:
-                if paused_since is None:
-                    paused_since = time.time()
-                    ser.write(f"#T:{pos}:{dur}:S\n".encode("ascii"))
-                elif time.time() - paused_since >= 8.0:
-                    # 8 seconds of continuous pause: Transition to Clock mode
-                    clock_state["clock_mode"] = True
-                    send_clock_dashboard(ser, clock_state)
-                    now = datetime.now()
-                    ms_left = (1_000_000 - now.microsecond) / 1_000_000.0
-                    await asyncio.sleep(max(0.05, ms_left))
-                    continue
-                else:
-                    ser.write(f"#T:{pos}:{dur}:S\n".encode("ascii"))
-                    await asyncio.sleep(0.4)
-                    continue
+                clock_state["clock_mode"] = True
+                send_clock_dashboard(ser, clock_state)
+                last_track_id = ""
+                paused_since = None
+                now = datetime.now()
+                ms_left = (1_000_000 - now.microsecond) / 1_000_000.0
+                await asyncio.sleep(max(0.05, ms_left))
+                continue
             else:
                 # ── Music IS playing! ──
-                if clock_state.get("clock_mode") or (paused_since is not None and paused_since > 0):
+                if clock_state.get("clock_mode"):
                     last_track_id = ""
                 clock_state["clock_mode"] = False
                 paused_since = None
