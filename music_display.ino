@@ -145,6 +145,7 @@ void updateWaterAnimation();
 
 bool          notifActive   = false;
 unsigned long notifExpireAt = 0;
+bool          waterActive   = false;
 
 // Autonomous Precision Clock Variables
 bool          clockSynced   = false;
@@ -187,10 +188,7 @@ void printCleanText(int x, int y, const char *src, int maxCh, uint16_t fg, int s
     buf[len] = 0;
   } else {
     strncpy(buf, src, maxCh - 3);
-    buf[maxCh - 3] = '.';
-    buf[maxCh - 2] = '.';
-    buf[maxCh - 1] = '.';
-    buf[maxCh] = 0;
+    strcpy(buf + maxCh - 3, "...");
   }
 
   tft.setTextSize(sz);
@@ -242,17 +240,12 @@ void drawHeader(char appCode = 'S') {
 
 void drawStatusBadge(char s) {
   tft.fillRect(150, 2, 88, 23, COL_BG);
-  uint16_t col;
-  const char *txt;
-  if      (s == 'P') { col = COL_GREEN;   txt = "PLAYING"; }
-  else if (s == 'S') { col = COL_GRAY_LT; txt = "PAUSED";  }
-  else               { col = COL_GRAY_MD; txt = "STANDBY"; }
-
+  uint16_t col = (s == 'P') ? COL_GREEN : ((s == 'S') ? COL_GRAY_LT : COL_GRAY_MD);
   tft.fillCircle(158, 13, 3, col);
   tft.setTextSize(1);
   tft.setTextColor(col, COL_BG);
   tft.setCursor(167, 10);
-  tft.print(txt);
+  tft.print((s == 'P') ? F("PLAYING") : ((s == 'S') ? F("PAUSED") : F("STANDBY")));
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -325,14 +318,14 @@ void setupClockLayout() {
   tft.setTextWrap(false);
   currentMode = MODE_CLOCK;
 
-  memset(lastClockDigits, 0, sizeof(lastClockDigits));
-  memset(lastClockAmpm,   0, sizeof(lastClockAmpm));
-  memset(lastClockDate,   0, sizeof(lastClockDate));
+  lastClockDigits[0] = 0;
+  lastClockAmpm[0]   = 0;
+  lastClockDate[0]   = 0;
 
   lastBatt = -1;
   lastChg  = -1;
-  memset(lastWifi, 0, sizeof(lastWifi));
-  memset(lastBt,   0, sizeof(lastBt));
+  lastWifi[0] = 0;
+  lastBt[0]   = 0;
   notifActive = false;
 
   lastVolDisp   = -1;
@@ -365,7 +358,7 @@ void renderClockDigits(const char *curDigits) {
 }
 
 void renderClock(const char *tStr, const char *ampm, const char *dStr) {
-  if (currentMode == MODE_WAIT_PC) {
+  if (currentMode == MODE_WAIT_PC || waterActive) {
     return;
   }
   if (currentMode != MODE_CLOCK) {
@@ -437,13 +430,10 @@ void drawBatteryWidget(int x, int y, int pct, bool chg) {
   // 3. Lightning bolt ⚡ symbol if charging
   int textStartX = x + 36;
   if (chg) {
-    int lx = x + 33;
-    int ly = y;
-    tft.drawLine(lx + 4, ly,     lx + 1, ly + 6,  0xFFE0);
-    tft.drawLine(lx + 5, ly,     lx + 2, ly + 6,  0xFFE0);
-    tft.drawLine(lx + 1, ly + 6, lx + 6, ly + 6,  0xFFE0);
-    tft.drawLine(lx + 6, ly + 6, lx + 2, ly + 14, 0xFFE0);
-    tft.drawLine(lx + 5, ly + 6, lx + 1, ly + 14, 0xFFE0);
+    int lx = x + 35;
+    tft.drawLine(lx + 3, y, lx, y + 6, 0xFFE0);
+    tft.drawFastHLine(lx, y + 6, 5, 0xFFE0);
+    tft.drawLine(lx + 4, y + 6, lx + 1, y + 14, 0xFFE0);
     textStartX += 16;
   }
 
@@ -623,75 +613,74 @@ void clearNotificationCard() {
 // ═══════════════════════════════════════════════════════════════════
 
 unsigned long waterLastAlert = 0;
-bool          waterActive    = false;
 unsigned long waterStartAt   = 0;
 int           prevCharX      = -1;
 int           lastWaterPhase = -1;
+static unsigned long lastWaterFrame = 0;
 
-void drawCharActor(int x, int pose, int frame) { return;
-  if (prevCharX >= 0 && prevCharX != x) {
-    tft.fillRect(prevCharX - 16, 138, 44, 92, COL_BG);
+void eraseCharActor(int x) {
+  if (x >= 0) {
+    tft.fillRect(x - 14, 138, 48, 92, COL_BG);
   }
+}
+
+void drawCharActor(int x, int pose, int frame) {
+  eraseCharActor(prevCharX);
   prevCharX = x;
 
-  // Head: cute face (radius 12 at y=156)
-  tft.fillCircle(x, 156, 12, 0xFFE0);
+  // Head: cute face (radius 11 at y=154)
+  tft.fillCircle(x, 154, 11, 0xFFE0);
   if (pose == 2) {
-    // Drinking: eyes closed happy
-    tft.drawFastHLine(x - 5, 154, 4, COL_BG);
-    tft.drawFastHLine(x + 1, 154, 4, COL_BG);
+    // Drinking: eyes closed happy (^ ^)
+    tft.drawFastHLine(x - 5, 152, 4, COL_BG);
+    tft.drawFastHLine(x + 1, 152, 4, COL_BG);
   } else if (pose == 3) {
     // Refreshed smile & wink
-    tft.fillCircle(x - 4, 154, 2, COL_BG);
-    tft.drawFastHLine(x + 1, 154, 4, COL_BG);
-    tft.drawFastHLine(x - 3, 161, 7, COL_BG);
+    tft.fillCircle(x - 4, 152, 2, COL_BG);
+    tft.drawFastHLine(x + 1, 152, 4, COL_BG);
+    tft.drawFastHLine(x - 3, 159, 7, COL_BG);
   } else {
     // Normal walking / standing
-    tft.fillCircle(x - 4, 154, 2, COL_BG);
-    tft.fillCircle(x + 4, 154, 2, COL_BG);
-    tft.drawFastHLine(x - 2, 161, 5, COL_BG);
+    tft.fillCircle(x - 4, 152, 2, COL_BG);
+    tft.fillCircle(x + 4, 152, 2, COL_BG);
+    tft.drawFastHLine(x - 2, 159, 5, COL_BG);
   }
 
   // Body: green hoodie
-  tft.fillRoundRect(x - 8, 170, 16, 32, 4, COL_GREEN);
+  tft.fillRoundRect(x - 7, 167, 14, 31, 3, COL_GREEN);
 
-  // Legs & Arms
+  // Common Legs (stride alternates in walk pose 0)
+  int l1 = (pose == 0 && frame == 1) ? 20 : 26;
+  int l2 = (pose == 0 && frame == 0) ? 20 : 26;
+  tft.fillRect(x - 5, 198, 3, l1, COL_WHITE);
+  tft.fillRect(x + 2, 198, 3, l2, COL_WHITE);
+
+  // Arms & Props based on pose
   if (pose == 0) {
-    // Walking
-    int l1 = (frame == 0) ? 26 : 20;
-    int l2 = (frame == 0) ? 20 : 26;
-    tft.fillRect(x - 6, 202, 4, l1, COL_WHITE);
-    tft.fillRect(x + 2, 202, 4, l2, COL_WHITE);
-    int ay = (frame == 0) ? 174 : 182;
-    tft.fillRect(x - 11, ay, 3, 12, COL_WHITE);
-    tft.fillRect(x + 8, (frame == 0) ? 182 : 174, 3, 12, COL_WHITE);
+    // Walking arm swing
+    int ay1 = (frame == 0) ? 171 : 179;
+    int ay2 = (frame == 0) ? 179 : 171;
+    tft.fillRect(x - 9, ay1, 2, 12, COL_WHITE);
+    tft.fillRect(x + 7, ay2, 2, 12, COL_WHITE);
   } else if (pose == 1) {
-    // Reaching for bottle on table
-    tft.fillRect(x - 6, 202, 4, 26, COL_WHITE);
-    tft.fillRect(x + 2, 202, 4, 26, COL_WHITE);
-    tft.fillRect(x - 10, 176, 3, 14, COL_WHITE);
-    tft.fillRect(x + 8, 172, 14, 4, COL_WHITE);
+    // Reaching right for bottle
+    tft.fillRect(x - 9, 172, 2, 12, COL_WHITE);
+    tft.fillRect(x + 7, 170, 36, 4, COL_WHITE);
   } else if (pose == 2) {
-    // Drinking bottle!
-    tft.fillRect(x - 6, 202, 4, 26, COL_WHITE);
-    tft.fillRect(x + 2, 202, 4, 26, COL_WHITE);
-    tft.fillRoundRect(x + 6, 146, 16, 12, 3, 0x07FF);
-    tft.fillRect(x + 2, 149, 4, 5, COL_WHITE);
-    tft.fillRect(x + 8, 158, 4, 16, COL_WHITE);
+    // Drinking bottle
+    tft.fillRect(x + 7, 156, 3, 16, COL_WHITE);
+    tft.fillRoundRect(x + 5, 144, 14, 12, 2, 0x07FF);
+    tft.fillRect(x + 1, 147, 4, 5, COL_WHITE);
     if (frame % 2 == 0) {
-      tft.fillCircle(x + 10, 168, 2, 0x07FF);
-    } else {
-      tft.fillCircle(x + 10, 168, 2, COL_BG);
+      tft.fillCircle(x + 8, 166, 2, 0x07FF);
     }
   } else if (pose == 3) {
-    // Refreshed: Waving hand & holding bottle
-    tft.fillRect(x - 6, 202, 4, 26, COL_WHITE);
-    tft.fillRect(x + 2, 202, 4, 26, COL_WHITE);
+    // Refreshed: Waving left hand & holding bottle at right hip
     int wy = (frame == 0) ? 142 : 148;
-    tft.fillRect(x - 10, 172, 3, 10, COL_WHITE);
-    tft.fillCircle(x - 12, wy, 3, 0xFFE0);
-    tft.fillRect(x + 8, 174, 3, 14, COL_WHITE);
-    tft.fillRoundRect(x + 9, 180, 8, 16, 2, 0x07FF);
+    tft.fillRect(x - 9, 169, 2, 8, COL_WHITE);
+    tft.fillCircle(x - 11, wy, 3, 0xFFE0);
+    tft.fillRect(x + 7, 172, 2, 12, COL_WHITE);
+    tft.fillRoundRect(x + 8, 178, 6, 14, 2, 0x07FF);
   }
 }
 
@@ -700,10 +689,11 @@ void startWaterAnimation() {
   waterStartAt = millis();
   prevCharX = -1;
   lastWaterPhase = -1;
+  lastWaterFrame = 0;
 
   tft.fillScreen(COL_BG);
 
-  // Top header text
+  // Header Title
   tft.setTextSize(2);
   tft.setTextColor(0x07FF, COL_BG);
   tft.setCursor(38, 20);
@@ -711,21 +701,21 @@ void startWaterAnimation() {
 
   tft.setTextSize(1);
   tft.setTextColor(COL_WHITE, COL_BG);
-  tft.setCursor(52, 46);
+  tft.setCursor(50, 46);
   tft.print(F("* Time to drink water *"));
 
   // Floor line at y=228
   tft.drawFastHLine(10, 228, 220, 0x07FF);
 
-  // Table at x=136
-  tft.drawFastHLine(130, 200, 32, COL_WHITE);
-  tft.fillRect(142, 201, 8, 27, COL_CARD);
+  // Table at x=142
+  tft.fillRect(138, 196, 36, 4, COL_WHITE);
+  tft.fillRect(152, 200, 8, 28, COL_CARD);
 
   // Bottle on table
-  tft.fillRoundRect(140, 176, 12, 24, 3, 0x07FF);
-  tft.fillRect(143, 172, 6, 4, COL_WHITE);
+  tft.fillRoundRect(150, 172, 12, 24, 2, 0x07FF);
+  tft.fillRect(153, 168, 6, 4, COL_WHITE);
 
-  // Progress bar background at bottom
+  // Progress bar border at bottom
   tft.drawRoundRect(20, 265, 200, 6, 3, COL_TRACK);
 }
 
@@ -744,7 +734,7 @@ void updateWaterAnimation() {
   unsigned long now = millis();
   const unsigned long interval = 30UL * 60UL * 1000UL; // 30 minutes
 
-  // Trigger every 30 minutes if idle / no notification
+  // Auto-trigger every 30 minutes if idle
   if (!waterActive && !notifActive) {
     if (now - waterLastAlert >= interval) {
       startWaterAnimation();
@@ -752,6 +742,10 @@ void updateWaterAnimation() {
   }
 
   if (!waterActive) return;
+
+  // Frame throttle: update at ~18 FPS (55ms) for rock-solid smooth display
+  if (now - lastWaterFrame < 55) return;
+  lastWaterFrame = now;
 
   unsigned long elapsed = now - waterStartAt;
   if (notifActive || elapsed >= 10000) {
@@ -764,53 +758,61 @@ void updateWaterAnimation() {
   if (progW > 196) progW = 196;
   tft.fillRoundRect(22, 266, progW, 4, 2, 0x07FF);
 
-  // Phase logic
-  if (elapsed < 2800) {
-    // Phase 1: Walk in from left to table (x: 20 -> 110)
-    int cx = 20 + (int)((elapsed * 90L) / 2800L);
+  // 5 Acting Phases
+  if (elapsed < 2500) {
+    // Phase 1: Walk in from left to table (x: 20 -> 105)
+    int cx = 20 + (int)((elapsed * 85L) / 2500L);
     int step = (elapsed / 140) % 2;
     drawCharActor(cx, 0, step);
     lastWaterPhase = 1;
   }
-  else if (elapsed < 4000) {
-    // Phase 2: Reach for bottle
+  else if (elapsed < 3800) {
+    // Phase 2: Reach for bottle on table
     if (lastWaterPhase != 2) {
-      tft.fillRect(140, 172, 14, 28, COL_BG);
       lastWaterPhase = 2;
     }
-    drawCharActor(110, 1, 0);
+    drawCharActor(105, 1, 0);
+    // At 3.2s bottle is picked up from table
+    if (elapsed >= 3200) {
+      tft.fillRect(148, 168, 16, 28, COL_BG);
+    }
   }
-  else if (elapsed < 7200) {
-    // Phase 3: Drink water with gulp bubbles!
+  else if (elapsed < 6800) {
+    // Phase 3: Drink water with "GULP! GULP!"
     if (lastWaterPhase != 3) {
+      eraseCharActor(prevCharX);
       tft.setTextSize(2);
       tft.setTextColor(0x07FF, COL_BG);
-      tft.setCursor(80, 85);
-      tft.print(F("GULP! 💧"));
+      tft.setCursor(72, 85);
+      tft.print(F("GULP! GULP!"));
       lastWaterPhase = 3;
     }
-    int sipFrame = (elapsed / 250) % 2;
-    drawCharActor(110, 2, sipFrame);
+    int sipFrame = (elapsed / 220) % 2;
+    drawCharActor(105, 2, sipFrame);
   }
-  else if (elapsed < 8500) {
-    // Phase 4: Refreshed smile & wave!
+  else if (elapsed < 8200) {
+    // Phase 4: Refreshed smile & waving hand
     if (lastWaterPhase != 4) {
-      tft.fillRect(70, 85, 110, 20, COL_BG);
+      eraseCharActor(prevCharX);
+      tft.fillRect(60, 85, 140, 20, COL_BG);
       tft.setTextSize(2);
       tft.setTextColor(COL_GREEN, COL_BG);
-      tft.setCursor(55, 85);
+      tft.setCursor(56, 85);
       tft.print(F("FEEL GREAT!"));
       lastWaterPhase = 4;
     }
-    int waveFrame = (elapsed / 180) % 2;
-    drawCharActor(110, 3, waveFrame);
+    int waveFrame = (elapsed / 160) % 2;
+    drawCharActor(105, 3, waveFrame);
   }
   else {
-    // Phase 5: Walk off to the right (x: 110 -> 215)
-    int cx = 110 + (int)(((elapsed - 8500) * 105L) / 1500L);
+    // Phase 5: Walk off to the right (x: 105 -> 225)
+    if (lastWaterPhase != 5) {
+      tft.fillRect(50, 85, 150, 20, COL_BG);
+      lastWaterPhase = 5;
+    }
+    int cx = 105 + (int)(((elapsed - 8200) * 120L) / 1800L);
     int step = (elapsed / 140) % 2;
     drawCharActor(cx, 0, step);
-    lastWaterPhase = 5;
   }
 }
 
@@ -827,8 +829,9 @@ void drawVolumeWidget(int vol) {
 
     // Speaker body & cone
     tft.fillRect(x, y + 3, 4, 8, COL_WHITE);
-    tft.fillTriangle(x + 4, y + 3, x + 10, y, x + 4, y + 10, COL_WHITE);
-    tft.fillTriangle(x + 4, y + 10, x + 10, y + 13, x + 10, y, COL_WHITE);
+    for (int i = 0; i <= 6; i++) {
+      tft.drawFastVLine(x + 4 + i, y + 3 - (i / 2), 8 + i, COL_WHITE);
+    }
 
     if (vol == 0) {
       // Mute red X
@@ -859,21 +862,11 @@ void drawVolumeWidget(int vol) {
   // 3. Percentage Text (TextSize 2, green, e.g. " 75%")
   if (vol != lastVolDisp) {
     char vBuf[6];
-    if (vol >= 100) {
-      strcpy(vBuf, "100%");
-    } else if (vol >= 10) {
-      vBuf[0] = ' ';
-      vBuf[1] = '0' + (vol / 10);
-      vBuf[2] = '0' + (vol % 10);
-      vBuf[3] = '%';
-      vBuf[4] = 0;
-    } else {
-      vBuf[0] = ' ';
-      vBuf[1] = ' ';
-      vBuf[2] = '0' + vol;
-      vBuf[3] = '%';
-      vBuf[4] = 0;
-    }
+    vBuf[0] = (vol >= 100) ? '1' : ' ';
+    vBuf[1] = (vol >= 100) ? '0' : ((vol >= 10) ? ('0' + (vol / 10)) : ' ');
+    vBuf[2] = '0' + (vol % 10);
+    vBuf[3] = '%';
+    vBuf[4] = 0;
     tft.setTextSize(2);
     tft.setTextColor(COL_GREEN, COL_BG);
     tft.setCursor(168, y);
@@ -977,6 +970,9 @@ void receiveCoverImage() {
 
 void handleSong(char *payload) {
   if (currentMode == MODE_WAIT_PC) return;
+  if (waterActive) {
+    waterActive = false;
+  }
 
   char *p[7];
   byte k = 0;
@@ -1010,8 +1006,8 @@ void handleSong(char *payload) {
   lastTimePacketMillis = syncAt;
   hasCover = false;
 
-  // Clear player elements cleanly
-  tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_BG);
+  // Clear player elements cleanly & draw stylish placeholder
+  drawNoImgPlaceholder();
   tft.drawRoundRect(ART_X - 2, ART_Y - 2, ART_SIZE + 4, ART_SIZE + 4, 4, COL_BORDER);
 
   printCleanText(TXT_X, TITLE_Y,  title,  MAX_CH, COL_WHITE,   2);
@@ -1119,7 +1115,7 @@ void handleClock(char *payload) {
   int dLen = strlen(p[2]);
   if (dLen < 4 || dLen > 24) return;
 
-  if (currentMode == MODE_WAIT_PC) {
+  if (currentMode == MODE_WAIT_PC || waterActive) {
     return;
   }
 
@@ -1146,7 +1142,7 @@ void handleClock(char *payload) {
 }
 
 void handleSys(char *payload) {
-  if (currentMode != MODE_CLOCK) return;
+  if (currentMode != MODE_CLOCK || waterActive) return;
 
   char *hash = strchr(payload, '#');
   if (hash) *hash = 0;
@@ -1205,7 +1201,7 @@ void handleVol(char *payload) {
   int vol = atoi(payload);
   vol = constrain(vol, 0, 100);
   lastSentVol = vol;
-  if (currentMode == MODE_CLOCK) {
+  if (currentMode == MODE_CLOCK && !waterActive) {
     drawVolumeWidget(vol);
   }
 }
@@ -1213,6 +1209,9 @@ void handleVol(char *payload) {
 void parseCommand(char *cmd) {
   if (strncmp(cmd, "#SONG:", 6) == 0) {
     handleSong(cmd + 6);
+  }
+  else if (strcmp(cmd, "#TEST_WATER") == 0) {
+    startWaterAnimation();
   }
   else if (strcmp(cmd, "#IMG_START") == 0) {
     receiveCoverImage();
@@ -1330,7 +1329,6 @@ void setupWaitPcLayout() {
   // Modern Spotify Green Lock Icon
   // Arch (Shackle)
   tft.drawRoundRect(96, 52, 48, 44, 16, COL_GREEN);
-  tft.drawRoundRect(97, 53, 46, 42, 15, COL_GREEN);
   tft.fillRect(98, 76, 44, 20, COL_BG);
 
   // Body
@@ -1338,26 +1336,20 @@ void setupWaitPcLayout() {
   tft.drawRoundRect(80, 80, 80, 60, 8, COL_GREEN);
 
   // Keyhole
-  tft.fillCircle(120, 102, 6, COL_GREEN);
-  tft.fillTriangle(117, 104, 123, 104, 120, 120, COL_GREEN);
+  tft.fillCircle(120, 102, 5, COL_GREEN);
+  tft.fillRect(118, 105, 5, 12, COL_GREEN);
 
   // Main Status Text
   tft.setTextSize(3);
   tft.setTextColor(COL_WHITE, COL_BG);
-  tft.setCursor(66, 150);
+  tft.setCursor(66, 155);
   tft.print(F("LOCKED"));
 
   // Secondary text
   tft.setTextSize(2);
-  tft.setTextColor(COL_WHITE, COL_BG);
-  tft.setCursor(36, 180);
-  tft.print(F("ENTER PASSWORD"));
-
-  // Info label
-  tft.setTextSize(1);
   tft.setTextColor(COL_GRAY_LT, COL_BG);
-  tft.setCursor(50, 212);
-  tft.print(F("Waiting for PC login..."));
+  tft.setCursor(44, 195);
+  tft.print(F("Waiting for PC..."));
 
   // Bottom pulsing track rail
   tft.drawRoundRect(30, 252, 180, 6, 3, COL_TRACK);
@@ -1373,23 +1365,14 @@ void updateWaitPcAnimation() {
 
   // Clear previous dot
   tft.fillRect(pulseX - 8, 253, 24, 4, COL_BG);
-  tft.drawFastHLine(max(32, pulseX - 8), 254, min(176, 24), COL_TRACK);
+  tft.drawFastHLine(max(32, pulseX - 8), 254, 24, COL_TRACK);
 
   pulseX += pulseDir;
   if (pulseX >= 195) { pulseX = 195; pulseDir = -3; }
   else if (pulseX <= 45) { pulseX = 45; pulseDir = 3; }
 
   // Draw sleek glowing dot
-  tft.fillRoundRect(pulseX - 6, 253, 12, 4, 2, COL_GREEN);
-}
-
-void playBootAnimation() {
-  tft.fillScreen(COL_BG);
-  tft.setTextSize(2);
-  tft.setTextColor(COL_WHITE, COL_BG);
-  tft.setCursor(62, 142);
-  tft.print(F("SMART DECK"));
-  delay(150);
+  tft.fillRect(pulseX - 6, 253, 12, 4, COL_GREEN);
 }
 
 void setup() {
@@ -1398,8 +1381,13 @@ void setup() {
   tft.begin(tft.readID());
   tft.setRotation(ROTATION);
 
-  // Begin display and play sleek intro animation
-  playBootAnimation();
+  // Begin display and splash
+  tft.fillScreen(COL_BG);
+  tft.setTextSize(2);
+  tft.setTextColor(COL_WHITE, COL_BG);
+  tft.setCursor(62, 142);
+  tft.print(F("SMART DECK"));
+  delay(150);
 
   // Read volume pot starting position
   checkVolumePot();
