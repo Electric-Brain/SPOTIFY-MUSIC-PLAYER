@@ -318,7 +318,7 @@ void setupClockLayout() {
   tft.setTextWrap(false);
   currentMode = MODE_CLOCK;
 
-  lastClockDigits[0] = 0;
+  memset(lastClockDigits, 0, sizeof(lastClockDigits));
   lastClockAmpm[0]   = 0;
   lastClockDate[0]   = 0;
 
@@ -358,7 +358,7 @@ void renderClockDigits(const char *curDigits) {
 }
 
 void renderClock(const char *tStr, const char *ampm, const char *dStr) {
-  if (currentMode == MODE_WAIT_PC || waterActive) {
+  if (waterActive) {
     return;
   }
   if (currentMode != MODE_CLOCK) {
@@ -897,15 +897,18 @@ void drawVolumeWidget(int vol) {
 // ═══════════════════════════════════════════════════════════════════
 
 void drawNoImgPlaceholder() {
-  tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_SURFACE);
+  tft.fillRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, COL_CARD);
+  tft.drawRoundRect(ART_X - 2, ART_Y - 2, ART_SIZE + 4, ART_SIZE + 4, 4, COL_BORDER);
   if (currentAppSource == 'C') {
     drawChromeIcon24(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2);
   } else {
-    tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logo24, 24, 24, COL_GREEN, COL_SURFACE);
+    tft.drawBitmap(ART_X + (ART_SIZE - 24) / 2, ART_Y + (ART_SIZE - 24) / 2, logo24, 24, 24, COL_GREEN, COL_CARD);
   }
 }
 
 void receiveCoverImage() {
+  currentMode = MODE_MUSIC;
+
   Serial.write('K'); // ACK start
 
   uint16_t rowBuf[ART_SIZE];
@@ -913,11 +916,15 @@ void receiveCoverImage() {
 
   for (int row = 0; row < ART_SIZE; row++) {
     checkVolumePot();
+    lastTimePacketMillis = millis();
 
     unsigned long t0 = millis();
     while (Serial.available() < 3) {
       checkVolumePot();
-      if (millis() - t0 > 800) return;
+      if (millis() - t0 > 800) {
+        drawNoImgPlaceholder();
+        return;
+      }
     }
 
     char c1 = Serial.read();
@@ -931,6 +938,7 @@ void receiveCoverImage() {
     }
 
     if (c1 != '#' || c2 != 'L' || r != row) {
+      drawNoImgPlaceholder();
       return;
     }
 
@@ -948,6 +956,7 @@ void receiveCoverImage() {
       } else {
         checkVolumePot();
         if (millis() - t0 > 600) {
+          drawNoImgPlaceholder();
           return;
         }
       }
@@ -956,7 +965,6 @@ void receiveCoverImage() {
     tft.setAddrWindow(ART_X, ART_Y + row, ART_X + ART_SIZE - 1, ART_Y + row);
     tft.pushColors(rowBuf, ART_SIZE, true);
 
-    updateLiveProgress();
     checkVolumePot();
     Serial.write('K');
   }
@@ -969,7 +977,6 @@ void receiveCoverImage() {
 // ═══════════════════════════════════════════════════════════════════
 
 void handleSong(char *payload) {
-  if (currentMode == MODE_WAIT_PC) return;
   if (waterActive) {
     waterActive = false;
   }
@@ -1115,7 +1122,7 @@ void handleClock(char *payload) {
   int dLen = strlen(p[2]);
   if (dLen < 4 || dLen > 24) return;
 
-  if (currentMode == MODE_WAIT_PC || waterActive) {
+  if (waterActive) {
     return;
   }
 
