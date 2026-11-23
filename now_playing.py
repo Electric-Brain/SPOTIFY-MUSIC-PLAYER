@@ -54,6 +54,22 @@ from pycaw.pycaw import AudioUtilities, IMMDeviceEnumerator, IAudioEndpointVolum
 from pycaw.constants import CLSID_MMDeviceEnumerator, EDataFlow, ERole
 import serial
 import serial.tools.list_ports
+
+# Suppress benign CH340 driver Error 31 on Windows when reconfiguring COM port DCB
+try:
+    from serial.serialwin32 import Serial as Win32Serial
+    _orig_reconfig = Win32Serial._reconfigure_port
+    def _safe_reconfig(self):
+        try:
+            _orig_reconfig(self)
+        except serial.SerialException as ex:
+            if "31" in str(ex):
+                log("Note: Suppressed benign CH340 DCB Error 31 during port reconfigure")
+            else:
+                raise
+    Win32Serial._reconfigure_port = _safe_reconfig
+except Exception:
+    pass
 from winrt.windows.devices.radios import Radio, RadioKind, RadioState
 from winrt.windows.devices.bluetooth import BluetoothDevice, BluetoothLEDevice, BluetoothConnectionStatus
 from winrt.windows.devices.enumeration import DeviceInformation
@@ -382,6 +398,18 @@ async def telemetry_background_worker(notif_listener, state_tracker: dict):
         await asyncio.sleep(2.0)
 
 
+def safe_write(ser: serial.Serial, data: bytes) -> bool:
+    """Safe serial writer that catches timeouts and transient write errors without crashing."""
+    if not ser or not ser.is_open:
+        return False
+    try:
+        ser.write(data)
+        return True
+    except (serial.SerialTimeoutException, serial.SerialException, OSError) as e:
+        log(f"Serial write warning: {e}")
+        return False
+
+
 def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
     """Dispatches the live second clock tick, system telemetry, and notifications in <0.1ms."""
     global _last_applied_vol, _last_applied_time
@@ -389,7 +417,7 @@ def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
     t_str = f"{now.hour % 12 or 12:2d}:{now.minute:02d}:{now.second:02d}"
     ampm  = now.strftime("%p")
     d_str = now.strftime("%A, %d %b")
-    ser.write(f"#CLOCK:{t_str}|{ampm}|{d_str}\n".encode("ascii"))
+    safe_write(ser, f"#CLOCK:{t_str}|{ampm}|{d_str}\n".encode("ascii"))
 
     cur_time = time.time()
     pct  = state_tracker.get("battery_pct", 100)
@@ -399,14 +427,14 @@ def send_clock_dashboard(ser: serial.Serial, state_tracker: dict):
     sys_state = f"{pct}|{chg}|{wifi}|{bt}"
 
     if sys_state != state_tracker.get("last_sys_state", "") or (cur_time - state_tracker.get("last_sys_sent", 0) >= 5.0):
-        ser.write(f"#SYS:{sys_state}\n".encode("ascii"))
+        safe_write(ser, f"#SYS:{sys_state}\n".encode("ascii"))
         state_tracker["last_sys_state"] = sys_state
         state_tracker["last_sys_sent"] = cur_time
 
     if state_tracker.get("pending_notif"):
         napp, nmsg = state_tracker["pending_notif"]
         state_tracker["pending_notif"] = None
-        ser.write(f"#NOTIF:{napp}|{nmsg}\n".encode("ascii"))
+        safe_write(ser, f"#NOTIF:{napp}|{nmsg}\n".encode("ascii"))
         log(f"Notification sent to display: [{napp}] {nmsg}")
 
     # Sync system volume to Arduino clock mode ONLY if changed independently from Windows side
@@ -913,21 +941,34 @@ async def get_best_session(mgr):
 
     spotify = None
     playing = None
+    first_other = None
     for ses in sessions:
         try:
             app = (ses.source_app_user_model_id or "").lower()
-            st = ses.get_playback_info().playback_status
-            if "spotify" in app:
-                if st == PlayStatus.PLAYING:
+            info = ses.get_playback_info()
+            st = info.playback_status if info else None
+            if st == PlayStatus.PLAYING:
+                if "spotify" in app:
                     return ses
-                spotify = ses
-            elif st == PlayStatus.PLAYING and playing is None:
-                playing = ses
+                if playing is None:
+                    playing = ses
+            elif "spotify" in app:
+                if spotify is None:
+                    spotify = ses
+            else:
+                if first_other is None:
+                    first_other = ses
         except Exception:
             continue
 
+    if playing:
+        return playing
+    if spotify:
+        return spotify
+    if first_other:
+        return first_other
     try:
-        return spotify or playing or mgr.get_current_session()
+        return mgr.get_current_session()
     except Exception:
         return None
 
@@ -1277,6 +1318,9 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
 
             # ── If music is not playing -> Instantly switch to Main Display (Clock Mode) ──
             if status != PlayStatus.PLAYING:
+                if not clock_state.get("clock_mode", True):
+                    safe_write(ser, f"#T:{pos}:{dur}:S\n".encode("ascii"))
+                    log(f"Playback paused/stopped ({pos}/{dur}s) -> sent frozen #T and switching to Clock Mode")
                 clock_state["clock_mode"] = True
                 send_clock_dashboard(ser, clock_state)
                 last_track_id = ""
@@ -1328,7 +1372,7 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
 
                 # Immediately send title, artist, duration, current position, and play/pause state!
                 song_cmd = f"#SONG:{t}|{ar}|{al}|{dur}|{pos}|{flag}|{src_code}\n"
-                ser.write(song_cmd.encode("ascii"))
+                safe_write(ser, song_cmd.encode("ascii"))
                 await asyncio.sleep(0.04)
 
                 # Stream cover with active mid-stream abort check
@@ -1347,7 +1391,7 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
                     finally:
                         clock_state["streaming_cover"] = False
                 else:
-                    ser.write(b"#NOIMG\n")
+                    safe_write(ser, b"#NOIMG\n")
                     success = True
 
                 if success:
@@ -1366,7 +1410,7 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
 
             # ── Send Live Time Update ──
             time_cmd = f"#T:{pos}:{dur}:{flag}\n"
-            ser.write(time_cmd.encode("ascii"))
+            safe_write(ser, time_cmd.encode("ascii"))
             await asyncio.sleep(0.4)
     finally:
         clock_state["running"] = False
@@ -1418,16 +1462,18 @@ async def main():
         ser = None
         try:
             log(f"Arduino detected on {target_port}. Opening serial...")
-            ser = serial.Serial()
-            ser.port = target_port
-            ser.baudrate = BAUD
-            ser.timeout = 2
-            ser.dtr = False  # Avoid asserting DTR (prevents Arduino Uno hardware reset!)
-            ser.rts = False
-            ser.open()
-            await asyncio.sleep(0.2)
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
+            ser = serial.Serial(
+                port=target_port,
+                baudrate=BAUD,
+                timeout=1.5,
+                write_timeout=1.5,
+            )
+            await asyncio.sleep(0.3)
+            try:
+                ser.reset_input_buffer()
+                ser.reset_output_buffer()
+            except Exception:
+                pass
             log(f"Serial connected to {target_port}")
             if mgr is None:
                 mgr = await get_session_manager_safe()

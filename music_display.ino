@@ -89,6 +89,7 @@ char artist[50] = "";
 char album[50]  = "";
 long dur = 0, posSync = 0;
 unsigned long syncAt = 0;
+unsigned long lastTimePacketMillis = 0;
 char state = 'N';          // 'P' = playing, 'S' = paused, 'N' = standby
 char prevState = ' ';
 bool hasCover = false;
@@ -286,10 +287,19 @@ void renderProgressBar(long posNow) {
 void updateLiveProgress() {
   if (currentMode != MODE_MUSIC) return;
 
+  // Auto-switch to clock mode if no fresh media packets from PC for 4 seconds
+  if (millis() - lastTimePacketMillis > 4000) {
+    setupClockLayout();
+    return;
+  }
+
   long posNow = posSync;
   if (state == 'P' && dur > 0) {
-    posNow += (long)(millis() - syncAt) / 1000;
-    if (posNow > dur) posNow = dur;
+    // Only advance autonomous seconds if fresh heartbeat received within 2.5s
+    if (millis() - lastTimePacketMillis < 2500) {
+      posNow += (long)(millis() - syncAt) / 1000;
+      if (posNow > dur) posNow = dur;
+    }
   }
 
   char nl[8];
@@ -997,6 +1007,7 @@ void handleSong(char *payload) {
   prevState = state;
 
   syncAt = millis();
+  lastTimePacketMillis = syncAt;
   hasCover = false;
 
   // Clear player elements cleanly
@@ -1039,6 +1050,7 @@ void handleSong(char *payload) {
 
 void handleTimeUpdate(char *payload) {
   if (currentMode != MODE_MUSIC) return;
+  lastTimePacketMillis = millis();
 
   char *p[3];
   byte k = 0;
@@ -1230,24 +1242,6 @@ void parseCommand(char *cmd) {
   }
   else if (strcmp(cmd, "#UNLOCK") == 0) {
     if (currentMode == MODE_WAIT_PC) {
-      tft.fillScreen(COL_BG);
-      tft.fillCircle(120, 105, 24, COL_GREEN);
-      tft.drawLine(108, 105, 116, 113, COL_WHITE);
-      tft.drawLine(109, 105, 117, 113, COL_WHITE);
-      tft.drawLine(116, 113, 132, 97, COL_WHITE);
-      tft.drawLine(117, 113, 133, 97, COL_WHITE);
-
-      tft.setTextSize(2);
-      tft.setTextColor(COL_WHITE, COL_BG);
-      tft.setCursor(62, 148);
-      tft.print(F("CONNECTED"));
-
-      tft.setTextSize(1);
-      tft.setTextColor(COL_GRAY_LT, COL_BG);
-      tft.setCursor(80, 172);
-      tft.print(F("SYSTEM READY"));
-      delay(350);
-
       setupClockLayout();
     }
   }
