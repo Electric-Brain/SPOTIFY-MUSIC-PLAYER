@@ -620,10 +620,11 @@ async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#   WINDOWS WORKSTATION LOCK / UNLOCK EVENT MONITOR
+#   WINDOWS WORKSTATION LOCK / UNLOCK & DISPLAY STATE MONITOR
 # ═══════════════════════════════════════════════════════════════════
 
 _session_locked = False
+_display_off = False
 _session_monitor_started = False
 
 user32 = ctypes.windll.user32
@@ -635,9 +636,55 @@ WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, ctypes.c_uint, wintypes.WPA
 user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 user32.DefWindowProcW.restype = LRESULT
 
-WM_WTSSESSION_CHANGE = 0x02B1
-WTS_SESSION_LOCK     = 0x7
-WTS_SESSION_UNLOCK   = 0x8
+user32.CreateWindowExW.argtypes = [
+    wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID
+]
+user32.CreateWindowExW.restype = wintypes.HWND
+
+class GUID(ctypes.Structure):
+    _fields_ = [
+        ('Data1', wintypes.DWORD),
+        ('Data2', wintypes.WORD),
+        ('Data3', wintypes.WORD),
+        ('Data4', ctypes.c_byte * 8)
+    ]
+
+# GUID_CONSOLE_DISPLAY_STATE: da396341-524d-41e8-a92d-7201e8ce458a
+GUID_CONSOLE_DISPLAY_STATE = GUID(
+    0xda396341, 0x524d, 0x41e8,
+    (ctypes.c_byte * 8)(0xa9, 0x2d, 0x72, 0x01, 0xe8, 0xce, 0x45, 0x8a)
+)
+
+WM_WTSSESSION_CHANGE   = 0x02B1
+WTS_SESSION_LOCK       = 0x7
+WTS_SESSION_UNLOCK     = 0x8
+WM_POWERBROADCAST      = 0x0218
+PBT_POWERSETTINGCHANGE = 0x8013
+
+class POWERBROADCAST_SETTING(ctypes.Structure):
+    _fields_ = [
+        ('PowerSetting', GUID),
+        ('DataLength', wintypes.DWORD),
+        ('Data', ctypes.c_byte * 4),
+    ]
+
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [
+        ('cbSize', wintypes.UINT),
+        ('dwTime', wintypes.DWORD),
+    ]
+
+def get_idle_seconds() -> float:
+    try:
+        lii = LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        if user32.GetLastInputInfo(ctypes.byref(lii)):
+            return (kernel32.GetTickCount() - lii.dwTime) / 1000.0
+    except Exception:
+        pass
+    return 0.0
 
 class WNDCLASSW(ctypes.Structure):
     _fields_ = [
@@ -656,14 +703,30 @@ class WNDCLASSW(ctypes.Structure):
 _proc_ref = None  # Keep strong reference to prevent GC callback crash
 
 def _session_wnd_proc(hwnd, msg, wparam, lparam):
-    global _session_locked
+    global _session_locked, _display_off
     if msg == WM_WTSSESSION_CHANGE:
         if wparam == WTS_SESSION_LOCK:
             _session_locked = True
             log("Session Event: Workstation LOCKED (WTS_SESSION_LOCK)")
         elif wparam == WTS_SESSION_UNLOCK:
             _session_locked = False
+            _display_off = False
             log("Session Event: Workstation UNLOCKED (WTS_SESSION_UNLOCK)")
+    elif msg == WM_POWERBROADCAST:
+        if wparam == PBT_POWERSETTINGCHANGE and lparam:
+            try:
+                pbs = ctypes.cast(lparam, ctypes.POINTER(POWERBROADCAST_SETTING)).contents
+                if pbs.PowerSetting.Data1 == 0xda396341:  # GUID_CONSOLE_DISPLAY_STATE
+                    state = int.from_bytes(bytes(pbs.Data[:4]), 'little')
+                    if state == 0:
+                        _display_off = True
+                        _session_locked = True
+                        log("Power Event: Laptop Display turned OFF (Screen Timeout / Sleep) -> Locking Deck")
+                    elif state == 1:
+                        _display_off = False
+                        log("Power Event: Laptop Display turned ON (Woken up)")
+            except Exception as e:
+                log(f"Power event parse error: {e}")
     return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
 def start_session_lock_monitor():
@@ -695,8 +758,9 @@ def start_session_lock_monitor():
         wc.lpszClassName = 'SpotifyDeck_SessionNotifier'
         wc.hInstance = kernel32.GetModuleHandleW(None)
         user32.RegisterClassW(ctypes.byref(wc))
-        hwnd = user32.CreateWindowExW(0, wc.lpszClassName, 'SpotifyDeck_Session', 0, 0, 0, 0, 0, 0, 0, wc.hInstance, 0)
+        hwnd = user32.CreateWindowExW(0, wc.lpszClassName, 'SpotifyDeck_Session', 0, 0, 0, 0, 0, 0, 0, wc.hInstance, None)
         wtsapi32.WTSRegisterSessionNotification(hwnd, 0)
+        user32.RegisterPowerSettingNotification(hwnd, ctypes.byref(GUID_CONSOLE_DISPLAY_STATE), 0)
 
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
@@ -707,9 +771,9 @@ def start_session_lock_monitor():
     t.start()
 
 def is_workstation_locked() -> bool:
-    """Accurately detects if Windows workstation is currently locked."""
-    global _session_locked
-    if _session_locked:
+    """Accurately detects if Windows workstation is currently locked or display is turned off."""
+    global _session_locked, _display_off
+    if _session_locked or _display_off:
         return True
     try:
         desk = user32.OpenInputDesktop(0, False, 0x01FF)
