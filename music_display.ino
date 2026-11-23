@@ -965,6 +965,9 @@ void receiveCoverImage() {
     tft.setAddrWindow(ART_X, ART_Y + row, ART_X + ART_SIZE - 1, ART_Y + row);
     tft.pushColors(rowBuf, ART_SIZE, true);
 
+    if ((row & 0x0F) == 0) {
+      updateLiveProgress();
+    }
     checkVolumePot();
     Serial.write('K');
   }
