@@ -26,6 +26,11 @@ import time
 import unicodedata
 
 # Ensure safe stdout/stderr when running as background service via pythonw.exe
+try:
+    ctypes.windll.ole32.CoInitialize(None)
+except Exception:
+    pass
+
 log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_run.log")
 _log_fp = None
 try:
@@ -594,8 +599,9 @@ def set_system_volume(vol_pct: int):
     if ep:
         try:
             ep.SetMasterVolumeLevelScalar(scalar, None)
-        except Exception:
-            pass
+            log(f"[VOL] Set system volume to {vol_pct}%")
+        except Exception as e:
+            log(f"[VOL ERROR] Direct set volume error: {e}")
 
     # Trigger native Windows Volume Flyout in matching direction
     if prev_vol < 0:
@@ -631,6 +637,7 @@ async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
                     if line.startswith("#VOL:"):
                         try:
                             vol = int(line[5:])
+                            log(f"[VOL] Potentiometer rotated -> #{vol}%")
                             set_system_volume(vol)
                         except ValueError:
                             pass
@@ -640,6 +647,7 @@ async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
                         if not is_workstation_locked():
                             try:
                                 ser.write(b"#UNLOCK\n")
+                                state_tracker["last_sys_sent"] = 0
                                 log("Workstation unlocked -> sent #UNLOCK on #READY")
                             except Exception:
                                 pass

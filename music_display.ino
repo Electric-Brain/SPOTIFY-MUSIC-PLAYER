@@ -122,6 +122,11 @@ int  lastChg            = -1;
 char lastWifi[20]       = "";
 char lastBt[20]         = "";
 
+int  savedBatt          = -1;
+int  savedChg           = -1;
+char savedWifi[20]      = "";
+char savedBt[20]        = "";
+
 int  lastVolDisp        = -1;
 int  lastMuteState      = -1;
 bool volLabelDrawn      = false;
@@ -130,12 +135,9 @@ int  lastSentVol        = -1;
 #define POT_PIN         A5
 void drawVolumeWidget(int vol);
 void checkVolumePot();
-void clearWaterCard();
-void updateWaterAnimation();
 
 bool          notifActive   = false;
 unsigned long notifExpireAt = 0;
-bool          waterActive   = false;
 
 // Autonomous Precision Clock Variables
 bool          clockSynced   = false;
@@ -354,10 +356,6 @@ void setupClockLayout() {
   lastClockAmpm[0]   = 0;
   lastClockDate[0]   = 0;
 
-  lastBatt = -1;
-  lastChg  = -1;
-  lastWifi[0] = 0;
-  lastBt[0]   = 0;
   notifActive = false;
 
   lastVolDisp   = -1;
@@ -368,6 +366,32 @@ void setupClockLayout() {
   tft.drawFastHLine(10, CLK_DIV1_Y, 220, COL_BORDER);
   tft.drawFastHLine(10, CLK_DIV2_Y, 220, COL_BORDER);
   tft.drawFastHLine(10, CLK_DIV3_Y, 220, COL_BORDER);
+
+  // Instantly restore Battery, WiFi, Bluetooth from cached memory
+  if (savedBatt >= 0) {
+    drawBatteryWidget(16, SYS_BATT_Y, savedBatt, savedChg != 0);
+    lastBatt = savedBatt;
+    lastChg  = savedChg;
+  } else {
+    lastBatt = -1;
+    lastChg  = -1;
+  }
+
+  if (savedWifi[0] != 0) {
+    drawWifiWidget(16, SYS_WIFI_Y, savedWifi);
+    strncpy(lastWifi, savedWifi, 19);
+    lastWifi[19] = 0;
+  } else {
+    lastWifi[0] = 0;
+  }
+
+  if (savedBt[0] != 0) {
+    drawBtWidget(16, SYS_BT_Y, savedBt);
+    strncpy(lastBt, savedBt, 19);
+    lastBt[19] = 0;
+  } else {
+    lastBt[0] = 0;
+  }
 
   if (lastSentVol >= 0) {
     drawVolumeWidget(lastSentVol);
@@ -390,9 +414,6 @@ void renderClockDigits(const char *curDigits) {
 }
 
 void renderClock(const char *tStr, const char *ampm, const char *dStr) {
-  if (waterActive) {
-    return;
-  }
   if (currentMode != MODE_CLOCK) {
     setupClockLayout();
   }
@@ -640,213 +661,7 @@ void clearNotificationCard() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  FULL-SCREEN ANIMATED WATER HYDRATION (10-SEC ACTING EVERY 30 MIN)
-// ═══════════════════════════════════════════════════════════════════
-
-unsigned long waterLastAlert = 0;
-unsigned long waterStartAt   = 0;
-int           prevCharX      = -1;
-int           lastWaterPhase = -1;
-static unsigned long lastWaterFrame = 0;
-
-void eraseCharActor(int x) {
-  if (x >= 0) {
-    tft.fillRect(x - 14, 138, 48, 92, COL_BG);
-  }
-}
-
-void drawCharActor(int x, int pose, int frame) {
-  eraseCharActor(prevCharX);
-  prevCharX = x;
-
-  // Head: cute face (radius 11 at y=154)
-  tft.fillCircle(x, 154, 11, 0xFFE0);
-  if (pose == 2) {
-    // Drinking: eyes closed happy (^ ^)
-    tft.drawFastHLine(x - 5, 152, 4, COL_BG);
-    tft.drawFastHLine(x + 1, 152, 4, COL_BG);
-  } else if (pose == 3) {
-    // Refreshed smile & wink
-    tft.fillCircle(x - 4, 152, 2, COL_BG);
-    tft.drawFastHLine(x + 1, 152, 4, COL_BG);
-    tft.drawFastHLine(x - 3, 159, 7, COL_BG);
-  } else {
-    // Normal walking / standing
-    tft.fillCircle(x - 4, 152, 2, COL_BG);
-    tft.fillCircle(x + 4, 152, 2, COL_BG);
-    tft.drawFastHLine(x - 2, 159, 5, COL_BG);
-  }
-
-  // Body: green hoodie
-  tft.fillRect(x - 7, 167, 14, 31, COL_GREEN);
-
-  // Common Legs (stride alternates in walk pose 0)
-  int l1 = (pose == 0 && frame == 1) ? 20 : 26;
-  int l2 = (pose == 0 && frame == 0) ? 20 : 26;
-  tft.fillRect(x - 5, 198, 3, l1, COL_WHITE);
-  tft.fillRect(x + 2, 198, 3, l2, COL_WHITE);
-
-  // Arms & Props based on pose
-  if (pose == 0) {
-    // Walking arm swing
-    int ay1 = (frame == 0) ? 171 : 179;
-    int ay2 = (frame == 0) ? 179 : 171;
-    tft.fillRect(x - 9, ay1, 2, 12, COL_WHITE);
-    tft.fillRect(x + 7, ay2, 2, 12, COL_WHITE);
-  } else if (pose == 1) {
-    // Reaching right for bottle
-    tft.fillRect(x - 9, 172, 2, 12, COL_WHITE);
-    tft.fillRect(x + 7, 170, 36, 4, COL_WHITE);
-  } else if (pose == 2) {
-    // Drinking bottle
-    tft.fillRect(x + 7, 156, 3, 16, COL_WHITE);
-    tft.fillRect(x + 5, 144, 14, 12, 0x07FF);
-    tft.fillRect(x + 1, 147, 4, 5, COL_WHITE);
-    if (frame % 2 == 0) {
-      tft.fillCircle(x + 8, 166, 2, 0x07FF);
-    }
-  } else if (pose == 3) {
-    // Refreshed: Waving left hand & holding bottle at right hip
-    int wy = (frame == 0) ? 142 : 148;
-    tft.fillRect(x - 9, 169, 2, 8, COL_WHITE);
-    tft.fillCircle(x - 11, wy, 3, 0xFFE0);
-    tft.fillRect(x + 7, 172, 2, 12, COL_WHITE);
-    tft.fillRect(x + 8, 178, 6, 14, 0x07FF);
-  }
-}
-
-void startWaterAnimation() {
-  waterActive = true;
-  waterStartAt = millis();
-  prevCharX = -1;
-  lastWaterPhase = -1;
-  lastWaterFrame = 0;
-
-  tft.fillScreen(COL_BG);
-
-  // Header Title
-  tft.setTextSize(2);
-  tft.setTextColor(0x07FF, COL_BG);
-  tft.setCursor(38, 20);
-  tft.print(F("STAY HYDRATED!"));
-
-  tft.setTextSize(1);
-  tft.setTextColor(COL_WHITE, COL_BG);
-  tft.setCursor(50, 46);
-  tft.print(F("* Time to drink water *"));
-
-  // Floor line at y=228
-  tft.drawFastHLine(10, 228, 220, 0x07FF);
-
-  // Table at x=142
-  tft.fillRect(138, 196, 36, 4, COL_WHITE);
-  tft.fillRect(152, 200, 8, 28, COL_CARD);
-
-  // Bottle on table
-  tft.fillRect(150, 172, 12, 24, 0x07FF);
-  tft.fillRect(153, 168, 6, 4, COL_WHITE);
-
-  // Progress bar border at bottom
-  tft.drawRect(20, 265, 200, 6, COL_TRACK);
-}
-
-void clearWaterCard() {
-  if (!waterActive) return;
-  waterActive = false;
-  waterLastAlert = millis();
-  prevCharX = -1;
-  lastWaterPhase = -1;
-  setupClockLayout();
-}
-
-void updateWaterAnimation() {
-  if (currentMode != MODE_CLOCK) return;
-
-  unsigned long now = millis();
-  const unsigned long interval = 30UL * 60UL * 1000UL; // 30 minutes
-
-  // Auto-trigger every 30 minutes if idle
-  if (!waterActive && !notifActive) {
-    if (now - waterLastAlert >= interval) {
-      startWaterAnimation();
-    }
-  }
-
-  if (!waterActive) return;
-
-  // Frame throttle: update at ~18 FPS (55ms) for rock-solid smooth display
-  if (now - lastWaterFrame < 55) return;
-  lastWaterFrame = now;
-
-  unsigned long elapsed = now - waterStartAt;
-  if (notifActive || elapsed >= 10000) {
-    clearWaterCard();
-    return;
-  }
-
-  // Bottom 10-second progress bar
-  int progW = (int)((elapsed * 196L) / 10000L);
-  if (progW > 196) progW = 196;
-  tft.fillRect(22, 266, progW, 4, 0x07FF);
-
-  // 5 Acting Phases
-  if (elapsed < 2500) {
-    // Phase 1: Walk in from left to table (x: 20 -> 105)
-    int cx = 20 + (int)((elapsed * 85L) / 2500L);
-    int step = (elapsed / 140) % 2;
-    drawCharActor(cx, 0, step);
-    lastWaterPhase = 1;
-  }
-  else if (elapsed < 3800) {
-    // Phase 2: Reach for bottle on table
-    if (lastWaterPhase != 2) {
-      lastWaterPhase = 2;
-    }
-    drawCharActor(105, 1, 0);
-    // At 3.2s bottle is picked up from table
-    if (elapsed >= 3200) {
-      tft.fillRect(148, 168, 16, 28, COL_BG);
-    }
-  }
-  else if (elapsed < 6800) {
-    // Phase 3: Drink water with "GULP! GULP!"
-    if (lastWaterPhase != 3) {
-      eraseCharActor(prevCharX);
-      tft.setTextSize(2);
-      tft.setTextColor(0x07FF, COL_BG);
-      tft.setCursor(72, 85);
-      tft.print(F("GULP! GULP!"));
-      lastWaterPhase = 3;
-    }
-    int sipFrame = (elapsed / 220) % 2;
-    drawCharActor(105, 2, sipFrame);
-  }
-  else if (elapsed < 8200) {
-    // Phase 4: Refreshed smile & waving hand
-    if (lastWaterPhase != 4) {
-      eraseCharActor(prevCharX);
-      tft.fillRect(60, 85, 140, 20, COL_BG);
-      tft.setTextSize(2);
-      tft.setTextColor(COL_GREEN, COL_BG);
-      tft.setCursor(56, 85);
-      tft.print(F("FEEL GREAT!"));
-      lastWaterPhase = 4;
-    }
-    int waveFrame = (elapsed / 160) % 2;
-    drawCharActor(105, 3, waveFrame);
-  }
-  else {
-    // Phase 5: Walk off to the right (x: 105 -> 225)
-    if (lastWaterPhase != 5) {
-      tft.fillRect(50, 85, 150, 20, COL_BG);
-      lastWaterPhase = 5;
-    }
-    int cx = 105 + (int)(((elapsed - 8200) * 120L) / 1800L);
-    int step = (elapsed / 140) % 2;
-    drawCharActor(cx, 0, step);
-  }
-}
+// ---------- Hardware Volume Widget (Portrait 240x320) ----------
 
 void drawVolumeWidget(int vol) {
   if (currentMode != MODE_CLOCK) return;
@@ -1030,10 +845,6 @@ void receiveCoverImage() {
 // ═══════════════════════════════════════════════════════════════════
 
 void handleSong(char *payload) {
-  if (waterActive) {
-    waterActive = false;
-  }
-
   char *p[7];
   byte k = 0;
   p[k++] = payload;
@@ -1175,10 +986,6 @@ void handleClock(char *payload) {
   int dLen = strlen(p[2]);
   if (dLen < 4 || dLen > 24) return;
 
-  if (waterActive) {
-    return;
-  }
-
   if (currentMode != MODE_CLOCK) {
     setupClockLayout();
   }
@@ -1202,7 +1009,7 @@ void handleClock(char *payload) {
 }
 
 void handleSys(char *payload) {
-  if (currentMode != MODE_CLOCK || waterActive) return;
+  if (currentMode != MODE_CLOCK) return;
 
   char *hash = strchr(payload, '#');
   if (hash) *hash = 0;
@@ -1219,6 +1026,11 @@ void handleSys(char *payload) {
   int chg = atoi(p[1]);
   char *wifi = p[2];
   char *bt   = p[3];
+
+  savedBatt = pct;
+  savedChg  = chg;
+  strncpy(savedWifi, wifi, 19); savedWifi[19] = 0;
+  strncpy(savedBt, bt, 19); savedBt[19] = 0;
 
   if (pct != lastBatt || chg != lastChg) {
     drawBatteryWidget(16, SYS_BATT_Y, pct, chg != 0);
@@ -1241,7 +1053,6 @@ void handleSys(char *payload) {
 
 void handleNotif(char *payload) {
   if (currentMode != MODE_CLOCK) return;
-  if (waterActive) clearWaterCard();
 
   char *hash = strchr(payload, '#');
   if (hash) *hash = 0;
@@ -1261,7 +1072,7 @@ void handleVol(char *payload) {
   int vol = atoi(payload);
   vol = constrain(vol, 0, 100);
   lastSentVol = vol;
-  if (currentMode == MODE_CLOCK && !waterActive) {
+  if (currentMode == MODE_CLOCK) {
     drawVolumeWidget(vol);
   }
 }
@@ -1269,9 +1080,6 @@ void handleVol(char *payload) {
 void parseCommand(char *cmd) {
   if (strncmp(cmd, "#SONG:", 6) == 0) {
     handleSong(cmd + 6);
-  }
-  else if (strcmp(cmd, "#TEST_WATER") == 0) {
-    startWaterAnimation();
   }
   else if (strcmp(cmd, "#IMG_START") == 0) {
     if (currentMode == MODE_MUSIC) {
@@ -1337,11 +1145,11 @@ void checkVolumePot() {
   }
 
   // Smooth ADC readings with exponential moving average (ideal for 47k pot impedance)
-  filteredAdc = filteredAdc * 0.70 + sample * 0.30;
+  filteredAdc = filteredAdc * 0.60 + sample * 0.40;
   int raw = (int)(filteredAdc + 0.5);
 
-  // Deadband: must move by at least 10 ADC counts (~1%) to trigger (avoids resting flutter)
-  if (abs(raw - lastSentRaw) >= 10) {
+  // Deadband: must move by at least 8 ADC counts (~0.8%) to trigger (avoids resting flutter)
+  if (abs(raw - lastSentRaw) >= 8) {
     lastSentRaw = raw;
     int clamped = constrain(raw, 10, 1014);
     int vol = map(clamped, 10, 1014, 0, 100);
@@ -1350,9 +1158,6 @@ void checkVolumePot() {
       Serial.print(F("#VOL:"));
       Serial.println(vol);
       lastSentVol = vol;
-      if (waterActive) {
-        clearWaterCard();
-      }
       if (currentMode == MODE_CLOCK) {
         drawVolumeWidget(vol);
       }
@@ -1440,6 +1245,7 @@ void updateWaitPcAnimation() {
 }
 
 void setup() {
+  pinMode(POT_PIN, INPUT);
   Serial.begin(115200);
 
   tft.begin(tft.readID());
@@ -1482,8 +1288,6 @@ void loop() {
     if (notifActive && millis() > notifExpireAt) {
       clearNotificationCard();
     }
-    updateWaterAnimation();
-    if (waterActive) return;
 
     // Autonomous precision quartz ticker: advances seconds every 1000ms live
     if (clockSynced && (millis() - clkLastTick >= 1000)) {
