@@ -1471,7 +1471,7 @@ async def main():
                 timeout=1.5,
                 write_timeout=1.5,
             )
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(1.8)
             try:
                 ser.reset_input_buffer()
                 ser.reset_output_buffer()
