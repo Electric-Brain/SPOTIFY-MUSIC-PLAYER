@@ -405,8 +405,12 @@ def safe_write(ser: serial.Serial, data: bytes) -> bool:
     try:
         ser.write(data)
         return True
-    except (serial.SerialTimeoutException, serial.SerialException, OSError) as e:
-        log(f"Serial write warning: {e}")
+    except (serial.SerialTimeoutException, serial.SerialException, OSError, PermissionError) as e:
+        log(f"Serial write error: {e} -> closing port to trigger auto-reconnect")
+        try:
+            ser.close()
+        except Exception:
+            pass
         return False
 
 
@@ -645,6 +649,13 @@ async def serial_reader_worker(ser: serial.Serial, state_tracker: dict):
                                 log("Workstation is locked -> sent #LOCK on #READY")
                             except Exception:
                                 pass
+        except (serial.SerialException, OSError, PermissionError) as e:
+            log(f"Serial reader disconnected or error: {e}")
+            try:
+                ser.close()
+            except Exception:
+                pass
+            break
         except Exception:
             pass
         await asyncio.sleep(0.015)
@@ -851,18 +862,7 @@ def get_screen_timeout_seconds() -> int:
 def is_workstation_locked() -> bool:
     """Accurately detects if Windows workstation is currently locked or display is turned off."""
     global _session_locked, _display_off
-    if _session_locked or _display_off:
-        return True
-
-    # 1. Inactivity check: if idle time exceeded display timeout, user stepped away and screen is locked/sleeping
-    idle = get_idle_seconds()
-    timeout = get_screen_timeout_seconds()
-    if idle >= timeout:
-        _session_locked = True
-        log(f"Inactivity timeout reached (idle: {idle:.1f}s >= timeout: {timeout}s) -> Workstation treated as LOCKED")
-        return True
-
-    # 2. Check input desktop (Winlogon desktop indicates lock screen)
+    # Real OS lock desktop check: Winlogon desktop indicates lock screen
     try:
         desk = user32.OpenInputDesktop(0, False, 0x01FF)
         if desk == 0:
@@ -876,12 +876,14 @@ def is_workstation_locked() -> bool:
             _session_locked = True
             return True
         else:
-            if idle < 3.0:
-                _session_locked = False
-                _display_off = False
+            # Active interactive user desktop is 'default' -> user is unlocked at the workstation
+            _session_locked = False
+            _display_off = False
+            return False
     except Exception:
         pass
-    return False
+
+    return _session_locked or _display_off
 
 
 def find_arduino_port() -> str | None:
@@ -1386,12 +1388,6 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
 
                 # Stream cover with active mid-stream abort check
                 cover = await extract_cover_safe()
-                if not cover:
-                    if src_code == "C":
-                        cover = get_chrome_cover_rgb565()
-                    else:
-                        cover = get_spotify_cover_rgb565()
-
                 success = False
                 if cover:
                     clock_state["streaming_cover"] = True
@@ -1403,11 +1399,9 @@ async def run_playback_loop(ser: serial.Serial, mgr, notif_listener, initial_not
                     safe_write(ser, b"#NOIMG\n")
                     success = True
 
-                if success:
-                    last_track_id = track_key
-                else:
-                    last_track_id = ""
-                    await asyncio.sleep(0.5)
+                last_track_id = track_key
+                if not success:
+                    await asyncio.sleep(0.3)
 
                 try:
                     tl = ses.get_timeline_properties()
